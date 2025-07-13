@@ -1,0 +1,162 @@
+services:
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: rinha-nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api1
+      - api2
+    ports:
+      - "9999:9999"
+    networks:
+      - backend
+      - payment-processor
+    deploy:
+      resources:
+        limits:
+          cpus: "0.15"
+          memory: "15MB"
+
+  api1: &api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    hostname: api1
+    environment:
+      - APP_PORT=8080
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
+      - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
+      - INSTANCE_ID=API-1
+      - WORKER_CONCURRENCY=16
+    networks:
+      - backend
+      - payment-processor
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.55"
+          memory: "30MB"
+
+  api2:
+    <<: *api
+    hostname: api2
+    environment:
+      - APP_PORT=8080
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
+      - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
+      - INSTANCE_ID=API-2
+      - WORKER_CONCURRENCY=16
+
+  payment-processor-default:
+    image: zanfranceschi/payment-processor:arm64-20250707101540
+    container_name: payment-processor-default
+    hostname: payment-processor-default
+    environment:
+      - TRANSACTION_FEE=0.05
+      - RATE_LIMIT_SECONDS=5
+      - INITIAL_TOKEN=123
+      - DB_CONNECTION_STRING=Host=payment-processor-default-db;Port=5432;Database=rinha;Username=postgres;Password=postgres;Minimum Pool Size=15;Maximum Pool Size=20;Connection Pruning Interval=3
+    ports:
+      - 8001:8080
+    networks:
+      - payment-processor
+    depends_on:
+      - payment-processor-db-default
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: "100MB"
+
+  payment-processor-db-default:
+    image: postgres:17-alpine
+    container_name: -processor-default-db
+    hostname: payment-processor-default-db
+    ports:
+      - 54321:5432
+    networks:
+      - payment-processor
+    volumes:
+      - ./payment_processor_init.sql:/docker-entrypoint-initdb.d/init.sql
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=rinha
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: "250MB"
+
+  payment-processor-fallback:
+    image: zanfranceschi/payment-processor:arm64-20250707101540
+    container_name: payment-processor-fallback
+    hostname: payment-processor-fallback
+    environment:
+      - TRANSACTION_FEE=0.15
+      - RATE_LIMIT_SECONDS=5
+      - INITIAL_TOKEN=123
+      - DB_CONNECTION_STRING=Host=payment-processor-fallback-db;Port=5432;Database=rinha;Username=postgres;Password=postgres;Minimum Pool Size=15;Maximum Pool Size=20;Connection Pruning Interval=3
+    ports:
+      - 8002:8080
+    networks:
+      - payment-processor
+    depends_on:
+      - payment-processor-db-fallback
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: "100MB"
+
+  payment-processor-db-fallback:
+    image: postgres:17-alpine
+    container_name: payment-processor-fallback-db
+    hostname: payment-processor-fallback-db
+    ports:
+      - 54322:5432
+    networks:
+      - payment-processor
+    volumes:
+      - ./payment_processor_init.sql:/docker-entrypoint-initdb.d/init.sql
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=rinha
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: "250MB"
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: rinha-redis
+    command: redis-server --save "" --appendonly no --maxclients 20000
+    networks:
+      - backend
+      - payment-processor
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "275MB"
+
+networks:
+  backend:
+    driver: bridge
+  payment-processor:
+    driver: bridge 
