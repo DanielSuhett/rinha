@@ -7,11 +7,10 @@ export class PaymentService {
 	constructor(private readonly processorService: ProcessorService) {}
 
 	async processPayment(paymentDto: PaymentDto): Promise<string> {
-		try {
-			return await this.processorService.processPayment(paymentDto);
-		} catch (error) {
-			console.error('Default processor failed, trying fallback:', error);
-			return await this.processorService.processFallbackPayment(paymentDto);
-		}
+		return await this.processorService.processPayment(paymentDto);
+	}
+
+	async processFallbackPayment(paymentDto: PaymentDto): Promise<string> {
+		return await this.processorService.processFallbackPayment(paymentDto);
 	}
 }

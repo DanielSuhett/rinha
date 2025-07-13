@@ -23,4 +23,4 @@ USER nestjs
 
 EXPOSE 8080
 
-CMD ["node", "dist/main"] 
+CMD ["node", "dist/main"]

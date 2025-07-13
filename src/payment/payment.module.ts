@@ -5,7 +5,7 @@ import { HttpModule } from '@nestjs/axios';
 import { PaymentService } from './payment.service';
 import { PaymentController } from './payment.controller';
 import { PaymentConsumer } from './payment.processor';
-import { ProcessorService } from '../processor/processor.service';
+import { ProcessorModule } from '../processor/processor.module';
 
 @Module({
 	imports: [
@@ -19,8 +19,9 @@ import { ProcessorService } from '../processor/processor.service';
 			timeout: 5000,
 			maxRedirects: 5,
 		}),
+		ProcessorModule,
 	],
-	providers: [PaymentService, PaymentConsumer, ProcessorService],
+	providers: [PaymentService, PaymentConsumer],
 	controllers: [PaymentController],
 })
 export class PaymentModule {}
