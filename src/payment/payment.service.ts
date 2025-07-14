@@ -1,16 +1,18 @@
 import { Injectable } from '@nestjs/common';
-import { PaymentDto } from './payment.dto';
+import { PaymentSummaryResponseDto } from './payment.dto';
 import { ProcessorService } from '../processor/processor.service';
 
 @Injectable()
 export class PaymentService {
-	constructor(private readonly processorService: ProcessorService) {}
+	constructor(private readonly processorService?: ProcessorService) {}
 
-	async processPayment(paymentDto: PaymentDto): Promise<string> {
-		return await this.processorService.processPayment(paymentDto);
-	}
-
-	async processFallbackPayment(paymentDto: PaymentDto): Promise<string> {
-		return await this.processorService.processFallbackPayment(paymentDto);
+	async getPaymentSummary(
+		from?: string,
+		to?: string,
+	): Promise<PaymentSummaryResponseDto> {
+		if (!this.processorService) {
+			throw new Error('ProcessorService not available in producer mode');
+		}
+		return await this.processorService.getPaymentSummary(from, to);
 	}
 }

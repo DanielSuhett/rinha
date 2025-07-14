@@ -1,93 +1,138 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '../config/config.service';
 import { lastValueFrom } from 'rxjs';
+import { timeout } from 'rxjs/operators';
 
 export enum CircuitBreakerColor {
-  GREEN = 'green',
-  YELLOW = 'yellow',
-  RED = 'red',
+	GREEN = 'green',
+	YELLOW = 'yellow',
+	RED = 'red',
 }
 
 export interface ProcessorHealth {
-  failing: boolean;
-  minResponseTime: number;
+	failing: boolean;
+	minResponseTime: number;
 }
 
 @Injectable()
 export class CircuitBreakerService {
-  private readonly logger = new Logger(CircuitBreakerService.name);
-  private currentColor: CircuitBreakerColor = CircuitBreakerColor.GREEN;
-  private paymentHealth: ProcessorHealth = { failing: false, minResponseTime: 0 };
-  private fallbackHealth: ProcessorHealth = { failing: false, minResponseTime: 0 };
+	private readonly logger = new Logger(CircuitBreakerService.name);
+	private currentColor: CircuitBreakerColor = CircuitBreakerColor.GREEN;
+	private paymentHealth: ProcessorHealth = {
+		failing: false,
+		minResponseTime: 0,
+	};
+	private fallbackHealth: ProcessorHealth = {
+		failing: false,
+		minResponseTime: 0,
+	};
 
-  constructor(
-    private readonly httpService: HttpService,
-    private readonly configService: ConfigService,
-  ) {}
+	constructor(
+		private readonly httpService: HttpService,
+		private readonly configService: ConfigService,
+	) {}
 
-  @Cron('*/5 * * * * *')
-  async checkHealth(): Promise<void> {
-    try {
-      await Promise.all([
-        this.checkPaymentHealth(),
-        this.checkFallbackHealth(),
-      ]);
+	@Cron('*/5 * * * * *', {
+		disabled: process.env.APP_MODE === 'PRODUCER',
+	})
+	async checkHealth(): Promise<void> {
+		try {
+			await Promise.allSettled([
+				this.checkPaymentHealth(),
+				this.checkFallbackHealth(),
+			]);
 
-      this.updateCircuitBreakerColor();
-      this.logger.log(`Circuit breaker status: ${this.currentColor}`);
-    } catch (error) {
-      this.logger.error('Error during health check:', error);
-    }
-  }
+			this.updateCircuitBreakerColor();
 
-  private async checkPaymentHealth(): Promise<void> {
-    const url = `${this.configService.getProcessorDefaultUrl()}/payments/service-health`;
-    try {
-      const response = await lastValueFrom(this.httpService.get(url));
-      this.paymentHealth = response.data;
-    } catch (error) {
-      this.paymentHealth = { failing: true, minResponseTime: 0 };
-      this.logger.warn('Payment processor health check failed');
-    }
-  }
+			if (this.currentColor !== CircuitBreakerColor.GREEN) {
+				this.logger.warn(`Circuit breaker status: ${this.currentColor}`);
+			}
+		} catch (error) {
+			this.logger.error('Error during health check');
+		}
+	}
 
-  private async checkFallbackHealth(): Promise<void> {
-    const url = `${this.configService.getProcessorFallbackUrl()}/payments/service-health`;
-    try {
-      const response = await lastValueFrom(this.httpService.get(url));
-      this.fallbackHealth = response.data;
-    } catch (error) {
-      this.fallbackHealth = { failing: true, minResponseTime: 0 };
-      this.logger.warn('Fallback processor health check failed');
-    }
-  }
+	private async checkPaymentHealth(): Promise<void> {
+		const url = `${this.configService.getProcessorDefaultUrl()}/payments/service-health`;
+		try {
+			const response = await lastValueFrom(this.httpService.get(url));
 
-  private updateCircuitBreakerColor(): void {
-    const { failing: paymentFailing, minResponseTime: paymentResponseTime } = this.paymentHealth;
-    const { failing: fallbackFailing } = this.fallbackHealth;
+			if (response.data.minResponseTime > 0) {
+				this.logger.warn(
+					`Default processor response time: ${response.data.minResponseTime}ms`,
+				);
+			}
 
-    if (!paymentFailing && paymentResponseTime <= 5000) {
-      this.currentColor = CircuitBreakerColor.GREEN;
-    } else if ((paymentFailing || paymentResponseTime > 5000) && !fallbackFailing) {
-      this.currentColor = CircuitBreakerColor.YELLOW;
-    } else if (paymentFailing && fallbackFailing) {
-      this.currentColor = CircuitBreakerColor.RED;
-    } else {
-      this.currentColor = CircuitBreakerColor.GREEN;
-    }
-  }
+			this.paymentHealth = response.data;
+		} catch (error) {
+			if (error?.response?.status === 429) {
+				return;
+			}
+			this.paymentHealth = { failing: true, minResponseTime: 0 };
+			this.logger.warn('Payment processor health check failed');
+		}
+	}
 
-  getCurrentColor(): CircuitBreakerColor {
-    return this.currentColor;
-  }
+	private async checkFallbackHealth(): Promise<void> {
+		const url = `${this.configService.getProcessorFallbackUrl()}/payments/service-health`;
+		try {
+			const response = await lastValueFrom(this.httpService.get(url));
+			if (response.data.minResponseTime > 0) {
+				this.logger.warn(
+					`Fallback processor response time: ${response.data.minResponseTime}ms`,
+				);
+			}
+			this.fallbackHealth = response.data;
+		} catch (error) {
+			if (error?.response?.status === 429) {
+				return;
+			}
+			this.fallbackHealth = { failing: true, minResponseTime: 0 };
+			this.logger.warn('Fallback processor health check failed');
+		}
+	}
 
-  getHealthStatus() {
-    return {
-      color: this.currentColor,
-      payment: this.paymentHealth,
-      fallback: this.fallbackHealth,
-    };
-  }
+	private updateCircuitBreakerColor(): void {
+		const { failing: paymentFailing, minResponseTime: paymentResponseTime } =
+			this.paymentHealth;
+		const { failing: fallbackFailing, minResponseTime: fallbackResponseTime } =
+			this.fallbackHealth;
+
+		const everythingUp = !paymentFailing && !fallbackFailing;
+
+		if (paymentFailing && fallbackFailing) {
+			this.currentColor = CircuitBreakerColor.RED;
+			return;
+		}
+
+		if (
+			everythingUp &&
+			paymentResponseTime > 5000 &&
+			fallbackResponseTime < 5000
+		) {
+			this.currentColor = CircuitBreakerColor.YELLOW;
+			return;
+		}
+
+		if (paymentFailing && !fallbackFailing) {
+			this.currentColor = CircuitBreakerColor.YELLOW;
+			return;
+		}
+
+		this.currentColor = CircuitBreakerColor.GREEN;
+	}
+
+	getCurrentColor(): CircuitBreakerColor {
+		return this.currentColor;
+	}
+
+	getHealthStatus() {
+		return {
+			color: this.currentColor,
+			payment: this.paymentHealth,
+			fallback: this.fallbackHealth,
+		};
+	}
 }

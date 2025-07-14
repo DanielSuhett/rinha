@@ -17,6 +17,10 @@ export class ConfigService {
 		return this.config.APP_PORT;
 	}
 
+	getAppMode(): 'PRODUCER' | 'CONSUMER' {
+		return this.config.APP_MODE;
+	}
+
 	getRedisHost(): string {
 		return this.config.REDIS_HOST;
 	}
@@ -31,13 +35,5 @@ export class ConfigService {
 
 	getProcessorFallbackUrl(): string {
 		return this.config.PROCESSOR_FALLBACK_URL;
-	}
-
-	getInstanceId(): string | undefined {
-		return this.config.INSTANCE_ID;
-	}
-
-	getWorkerConcurrency(): number {
-		return this.config.WORKER_CONCURRENCY;
 	}
 } 

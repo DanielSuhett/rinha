@@ -2,12 +2,11 @@ import { z } from 'zod';
 
 const environmentSchema = z.object({
 	APP_PORT: z.coerce.number().default(3000),
+	APP_MODE: z.enum(['PRODUCER', 'CONSUMER']).default('PRODUCER'),
 	REDIS_HOST: z.string().default('localhost'),
-	REDIS_PORT: z.coerce.number().default(6379),
+	REDIS_PORT: z.coerce.number().default(6380),
 	PROCESSOR_DEFAULT_URL: z.string().url(),
 	PROCESSOR_FALLBACK_URL: z.string().url(),
-	INSTANCE_ID: z.string().optional(),
-	WORKER_CONCURRENCY: z.coerce.number().default(1),
 });
 
 export type Environment = z.infer<typeof environmentSchema>;

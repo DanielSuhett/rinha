@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsUUID } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsUUID, IsDateString, IsOptional } from 'class-validator';
 
 export class PaymentDto {
   @IsNotEmpty()
@@ -8,4 +8,24 @@ export class PaymentDto {
   @IsNotEmpty()
   @IsNumber()
   amount: number;
+}
+
+export class PaymentSummaryQueryDto {
+  @IsOptional()
+  @IsDateString()
+  from: string;
+
+  @IsOptional()
+  @IsDateString()
+  to: string;
+}
+
+export class ProcessorStatsDto {
+  totalRequests: number;
+  totalAmount: number;
+}
+
+export class PaymentSummaryResponseDto {
+  default: ProcessorStatsDto;
+  fallback: ProcessorStatsDto;
 }

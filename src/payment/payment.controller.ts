@@ -1,34 +1,87 @@
-import { Body, Controller, Post, Get } from '@nestjs/common';
+import { Body, Controller, Post, Get, Query, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
-import { PaymentDto } from './payment.dto';
+import {
+	PaymentDto,
+	PaymentSummaryQueryDto,
+	PaymentSummaryResponseDto,
+} from './payment.dto';
 import { Queue } from 'bullmq';
-import { CircuitBreakerService } from '../processor/circuit-breaker.service';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '../config/config.service';
+import { ProcessorService } from '../processor/processor.service';
+import { lastValueFrom } from 'rxjs';
 
-@Controller('payments')
+@Controller()
 export class PaymentController {
-  constructor(
-    @InjectQueue('payment') private readonly paymentQueue: Queue<PaymentDto, string>,
-    private readonly circuitBreakerService: CircuitBreakerService,
-  ) { }
+	private readonly logger = new Logger(PaymentController.name);
 
-  @Post()
-  async createPayment(@Body() payment: PaymentDto) {
-    await this.paymentQueue.add('payment', payment, {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 5000,
-      }
-    });
-    return { message: 'Payment queued for processing' };
-  }
+	constructor(
+		@InjectQueue('payment')
+		private readonly paymentQueue: Queue<PaymentDto, string>,
+		private readonly processorService: ProcessorService,
+		private readonly httpService: HttpService,
+		private readonly configService: ConfigService,
+	) {}
 
-  @Get('circuit-breaker-status')
-  getCircuitBreakerStatus() {
-    return this.circuitBreakerService.getHealthStatus();
-  }
+	@Post('payments')
+	async createPayment(@Body() payment: PaymentDto) {
+		await this.paymentQueue.add('payment', payment, {
+			attempts: 4,
+			backoff: { type: 'exponential', delay: 3000 },
+		});
+		return { message: 'Payment queued for processing' };
+	}
 
-  @Get()
-  async getSummmaryOfPayments() {
-  }
+	@Get('payments-summary')
+	async getPaymentSummary(
+		@Query() query: PaymentSummaryQueryDto,
+	): Promise<PaymentSummaryResponseDto> {
+		return await this.processorService.getPaymentSummary(query.from, query.to);
+	}
+
+	@Post('purge-payments')
+	async purgePayments() {
+		const defaultProcessorUrl = this.configService.getProcessorDefaultUrl();
+		const fallbackProcessorUrl = this.configService.getProcessorFallbackUrl();
+
+		const headers = {
+			'X-Rinha-Token': '123',
+		};
+
+		const [defaultResponse, fallbackResponse] = await Promise.allSettled([
+			lastValueFrom(
+				this.httpService.post(
+					`${defaultProcessorUrl}/admin/purge-payments`,
+					{},
+					{ headers },
+				),
+			),
+			lastValueFrom(
+				this.httpService.post(
+					`${fallbackProcessorUrl}/admin/purge-payments`,
+					{},
+					{ headers },
+				),
+			),
+		]);
+
+		return {
+			message: 'Purge payments completed',
+			results: {
+				default: defaultResponse.status === 'fulfilled' ? 'success' : 'failed',
+				fallback:
+					fallbackResponse.status === 'fulfilled' ? 'success' : 'failed',
+			},
+		};
+	}
+
+	private extractErrorMessage(error: any): string {
+		if (error?.response) {
+			return `HTTP ${error.response.status} - ${error.response.statusText || 'Unknown'} (${error.config?.url || 'unknown URL'})`;
+		}
+		if (error?.code) {
+			return `${error.code}: ${error.message}`;
+		}
+		return error?.message || 'Unknown error';
+	}
 }

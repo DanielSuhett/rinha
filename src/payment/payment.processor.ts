@@ -1,62 +1,63 @@
-import { PaymentService } from './payment.service';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { PaymentDto } from './payment.dto';
-import { CircuitBreakerService, CircuitBreakerColor } from '../processor/circuit-breaker.service';
+import {
+	CircuitBreakerService,
+	CircuitBreakerColor,
+} from '../processor/circuit-breaker.service';
+import { ProcessorService } from '../processor/processor.service';
 
 @Injectable()
-@Processor('payment', {
-  concurrency: 5,
-  limiter: {
-    max: 100,
-    duration: 60000,
-  },
-})
+@Processor('payment')
 export class PaymentConsumer extends WorkerHost {
-  private readonly logger = new Logger(PaymentConsumer.name);
+	private readonly logger = new Logger(PaymentConsumer.name);
 
-  constructor(
-    private readonly paymentService: PaymentService,
-    private readonly circuitBreakerService: CircuitBreakerService,
-  ) {
-    super();
-  }
+	constructor(
+		private readonly processorService: ProcessorService,
+		private readonly circuitBreakerService: CircuitBreakerService,
+	) {
+		super();
+	}
 
-  async process(job: Job<PaymentDto>): Promise<string> {
-    const currentColor = this.circuitBreakerService.getCurrentColor();
+	async process(job: Job<PaymentDto>): Promise<string | void> {
+		const currentColor = this.circuitBreakerService.getCurrentColor();
 
-    if (currentColor === CircuitBreakerColor.RED) {
-      this.logger.warn(`Circuit breaker is RED - delaying job ${job.data.correlationId}`);
+		if (currentColor === CircuitBreakerColor.RED) {
+			this.logger.warn(
+				`rescheduling job ${job.data.correlationId}`,
+			);
+			throw new Error('CIRCUIT_BREAKER_RED');
+		}
 
-      await job.moveToDelayed(Date.now() + 5000);
-      return 'Job delayed due to circuit breaker RED state';
-    }
+		try {
+			let result: string;
 
-    const startTime = Date.now();
+			if (currentColor === CircuitBreakerColor.GREEN) {
+				result = await this.processorService.processPayment(job.data);
+			} else if (currentColor === CircuitBreakerColor.YELLOW) {
+				result = await this.processorService.processFallbackPayment(job.data);
+			} else {
+				throw new Error(`Unknown circuit breaker color`);
+			}
 
-    try {
-      let result: string;
+			return result;
+		} catch (error) {
+			const errorMessage = this.extractErrorMessage(error);
+			this.logger.error(
+				`Payment processing failed (${currentColor}): ${job.data.correlationId} - ${errorMessage}`,
+			);
+			throw error;
+		}
+	}
 
-      if (currentColor === CircuitBreakerColor.GREEN) {
-        // Use main processor
-        result = await this.paymentService.processPayment(job.data);
-        const processingTime = Date.now() - startTime;
-        this.logger.log(`Payment processed via MAIN processor: ${job.data.correlationId} in ${processingTime}ms`);
-      } else if (currentColor === CircuitBreakerColor.YELLOW) {
-        // Use fallback processor
-        result = await this.paymentService.processFallbackPayment(job.data);
-        const processingTime = Date.now() - startTime;
-        this.logger.log(`Payment processed via FALLBACK processor: ${job.data.correlationId} in ${processingTime}ms`);
-      } else {
-        throw new Error(`Unknown circuit breaker color: ${currentColor}`);
-      }
-
-      return result;
-    } catch (error) {
-      const processingTime = Date.now() - startTime;
-      this.logger.error(`Payment processing failed (${currentColor}): ${job.data.correlationId} in ${processingTime}ms`, error);
-      throw error;
-    }
-  }
+	private extractErrorMessage(error: any): string {
+		if (error?.response) {
+			return `HTTP ${error.response.status} - ${error.response.statusText || 'Unknown'} (${error.config?.url || 'unknown URL'})`;
+		}
+		if (error?.code) {
+			return `${error.code}: ${error.message}`;
+		}
+		return error?.message || 'Unknown error';
+	}
 }
