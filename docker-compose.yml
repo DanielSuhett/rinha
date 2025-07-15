@@ -38,8 +38,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.70" 
-          memory: "140MB"
+          cpus: "0.30" 
+          memory: "70MB"
 
   api2:
     build:
@@ -62,8 +62,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.30"
-          memory: "140MB"
+          cpus: "0.70"
+          memory: "70MB"
 
   payment-processor-default:
     image: zanfranceschi/payment-processor:arm64-20250707101540
@@ -165,7 +165,7 @@ services:
       resources:
         limits:
           cpus: "0.25"
-          memory: "50MB"
+          memory: "190MB"
 
 networks:
   backend:

@@ -5,6 +5,7 @@ import { lastValueFrom } from 'rxjs';
 import { ConfigService } from '../config/config.service';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
+import { CircuitBreakerService } from './circuit-breaker.service';
 
 @Injectable()
 export class ProcessorService {
@@ -27,6 +28,7 @@ export class ProcessorService {
 		private readonly configService: ConfigService,
 		@InjectRedis() private readonly redis: Redis,
 		private readonly logger: Logger,
+		private readonly circuitBreakerService: CircuitBreakerService,
 	) {
 		this.defaultProcessorUrl = this.configService.getProcessorDefaultUrl();
 		this.fallbackProcessorUrl = this.configService.getProcessorFallbackUrl();
@@ -64,6 +66,11 @@ export class ProcessorService {
 			this.logger.error(
 				`Error processing payment with default processor: ${errorMessage}`,
 			);
+			
+			if (error?.response?.status === 500) {
+				this.circuitBreakerService.reportProcessorFailure('default');
+			}
+			
 			throw error;
 		}
 
@@ -90,6 +97,11 @@ export class ProcessorService {
 			this.logger.error(
 				`Error processing payment with fallback processor: ${errorMessage}`,
 			);
+			
+			if (error?.response?.status === 500) {
+				this.circuitBreakerService.reportProcessorFailure('fallback');
+			}
+			
 			throw error;
 		}
 
@@ -173,7 +185,6 @@ export class ProcessorService {
 			}
 
 			await pipeline.exec();
-			this.logger.debug(`Batch persisted ${paymentsToProcess.length} payments`);
 		} catch (error) {
 			const correlationIds = paymentsToProcess
 				.map((p) => p.correlationId)

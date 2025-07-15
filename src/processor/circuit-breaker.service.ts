@@ -135,4 +135,22 @@ export class CircuitBreakerService {
 			fallback: this.fallbackHealth,
 		};
 	}
+
+	reportProcessorFailure(processorType: 'default' | 'fallback'): void {
+		const timestamp = Date.now();
+		
+		if (processorType === 'default') {
+			this.paymentHealth = { failing: true, minResponseTime: 0 };
+			this.logger.warn(`Default processor marked as failing due to 500 error at ${new Date(timestamp).toISOString()}`);
+		} else {
+			this.fallbackHealth = { failing: true, minResponseTime: 0 };
+			this.logger.warn(`Fallback processor marked as failing due to 500 error at ${new Date(timestamp).toISOString()}`);
+		}
+
+		this.updateCircuitBreakerColor();
+		
+		if (this.currentColor !== CircuitBreakerColor.GREEN) {
+			this.logger.warn(`Circuit breaker status updated to: ${this.currentColor}`);
+		}
+	}
 }

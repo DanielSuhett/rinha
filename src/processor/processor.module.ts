@@ -27,8 +27,8 @@ export class ProcessorModule {
 					inject: [ConfigService],
 				}),
 			],
-			providers: [ProcessorService, Logger],
-			exports: [ProcessorService],
+			providers: [ProcessorService, CircuitBreakerService, Logger],
+			exports: [ProcessorService, CircuitBreakerService],
 		};
 	}
 

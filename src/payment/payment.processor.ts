@@ -24,9 +24,6 @@ export class PaymentConsumer extends WorkerHost {
 		const currentColor = this.circuitBreakerService.getCurrentColor();
 
 		if (currentColor === CircuitBreakerColor.RED) {
-			this.logger.warn(
-				`rescheduling job ${job.data.correlationId}`,
-			);
 			throw new Error('CIRCUIT_BREAKER_RED');
 		}
 
