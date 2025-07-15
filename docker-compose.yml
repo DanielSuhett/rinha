@@ -38,7 +38,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.30" 
+          cpus: "0.50"
           memory: "70MB"
 
   api2:
@@ -62,11 +62,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.70"
+          cpus: "0.50"
           memory: "70MB"
 
   payment-processor-default:
-    image: zanfranceschi/payment-processor:arm64-20250707101540
+    image: zanfranceschi/payment-processor:amd64-20250707101540
     container_name: payment-processor-default
     hostname: payment-processor-default
     environment:
@@ -107,7 +107,7 @@ services:
           memory: "250MB"
 
   payment-processor-fallback:
-    image: zanfranceschi/payment-processor:arm64-20250707101540
+    image: zanfranceschi/payment-processor:amd64-20250707101540
     container_name: payment-processor-fallback
     hostname: payment-processor-fallback
     environment:
@@ -171,4 +171,4 @@ networks:
   backend:
     driver: bridge
   payment-processor:
-    driver: bridge 
+    driver: bridge

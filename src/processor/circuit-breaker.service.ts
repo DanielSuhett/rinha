@@ -3,7 +3,6 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '../config/config.service';
 import { lastValueFrom } from 'rxjs';
-import { timeout } from 'rxjs/operators';
 
 export enum CircuitBreakerColor {
 	GREEN = 'green',
@@ -32,17 +31,41 @@ export class CircuitBreakerService {
 	constructor(
 		private readonly httpService: HttpService,
 		private readonly configService: ConfigService,
-	) {}
+		private readonly processor: {
+			default: string;
+			fallback: string;
+		}
+	) {
+		this.processor = {
+			default: `${this.configService.getProcessorDefaultUrl()}/payments/service-health`,
+			fallback: `${this.configService.getProcessorFallbackUrl()}/payments/service-health`,
+		}
+	}
+
+
 
 	@Cron('*/5 * * * * *', {
 		disabled: process.env.APP_MODE === 'PRODUCER',
 	})
 	async checkHealth(): Promise<void> {
 		try {
-			await Promise.allSettled([
-				this.checkPaymentHealth(),
-				this.checkFallbackHealth(),
-			]);
+
+			const defaultResponse = await lastValueFrom(this.httpService.get(this.processor.default)).catch((error) => {
+				if (error?.response?.status === 429) {
+					return;
+				}
+				return { data: { minResponseTime: 0, failing: true } };
+			});
+
+			const fallbackResponse = await lastValueFrom(this.httpService.get(this.processor.fallback)).catch((error) => {
+				if (error?.response?.status === 429) {
+					return;
+				}
+				return { data: { minResponseTime: 0, failing: true } };
+			});
+
+			this.paymentHealth = defaultResponse?.data || { minResponseTime: 0, failing: true };
+			this.fallbackHealth = fallbackResponse?.data || { minResponseTime: 0, failing: true };
 
 			this.updateCircuitBreakerColor();
 
@@ -51,46 +74,6 @@ export class CircuitBreakerService {
 			}
 		} catch (error) {
 			this.logger.error('Error during health check');
-		}
-	}
-
-	private async checkPaymentHealth(): Promise<void> {
-		const url = `${this.configService.getProcessorDefaultUrl()}/payments/service-health`;
-		try {
-			const response = await lastValueFrom(this.httpService.get(url));
-
-			if (response.data.minResponseTime > 0) {
-				this.logger.warn(
-					`Default processor response time: ${response.data.minResponseTime}ms`,
-				);
-			}
-
-			this.paymentHealth = response.data;
-		} catch (error) {
-			if (error?.response?.status === 429) {
-				return;
-			}
-			this.paymentHealth = { failing: true, minResponseTime: 0 };
-			this.logger.warn('Payment processor health check failed');
-		}
-	}
-
-	private async checkFallbackHealth(): Promise<void> {
-		const url = `${this.configService.getProcessorFallbackUrl()}/payments/service-health`;
-		try {
-			const response = await lastValueFrom(this.httpService.get(url));
-			if (response.data.minResponseTime > 0) {
-				this.logger.warn(
-					`Fallback processor response time: ${response.data.minResponseTime}ms`,
-				);
-			}
-			this.fallbackHealth = response.data;
-		} catch (error) {
-			if (error?.response?.status === 429) {
-				return;
-			}
-			this.fallbackHealth = { failing: true, minResponseTime: 0 };
-			this.logger.warn('Fallback processor health check failed');
 		}
 	}
 
@@ -138,7 +121,7 @@ export class CircuitBreakerService {
 
 	reportProcessorFailure(processorType: 'default' | 'fallback'): void {
 		const timestamp = Date.now();
-		
+
 		if (processorType === 'default') {
 			this.paymentHealth = { failing: true, minResponseTime: 0 };
 			this.logger.warn(`Default processor marked as failing due to 500 error at ${new Date(timestamp).toISOString()}`);
@@ -148,7 +131,7 @@ export class CircuitBreakerService {
 		}
 
 		this.updateCircuitBreakerColor();
-		
+
 		if (this.currentColor !== CircuitBreakerColor.GREEN) {
 			this.logger.warn(`Circuit breaker status updated to: ${this.currentColor}`);
 		}

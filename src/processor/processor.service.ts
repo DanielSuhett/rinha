@@ -1,7 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PaymentDto } from '../payment/payment.dto';
 import { HttpService } from '@nestjs/axios';
-import { lastValueFrom } from 'rxjs';
+import { catchError } from 'rxjs';
 import { ConfigService } from '../config/config.service';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
@@ -9,8 +9,6 @@ import { CircuitBreakerService } from './circuit-breaker.service';
 
 @Injectable()
 export class ProcessorService {
-	private readonly defaultProcessorUrl: string;
-	private readonly fallbackProcessorUrl: string;
 	private readonly PROCESSED_PAYMENTS_PREFIX = 'processed:payments';
 	private readonly BATCH_SIZE = 50;
 	private readonly BATCH_TIMEOUT = 1000;
@@ -29,9 +27,15 @@ export class ProcessorService {
 		@InjectRedis() private readonly redis: Redis,
 		private readonly logger: Logger,
 		private readonly circuitBreakerService: CircuitBreakerService,
+		private readonly processorPaymentUrl: {
+			default: string;
+			fallback: string;
+		}
 	) {
-		this.defaultProcessorUrl = this.configService.getProcessorDefaultUrl();
-		this.fallbackProcessorUrl = this.configService.getProcessorFallbackUrl();
+		this.processorPaymentUrl = {
+			default: this.configService.getProcessorDefaultUrl() + '/payments',
+			fallback: this.configService.getProcessorFallbackUrl() + '/payments',
+		}
 	}
 
 	newPayment(paymentDto: PaymentDto) {
@@ -45,67 +49,30 @@ export class ProcessorService {
 		return payment;
 	}
 
-	async processPayment(data: PaymentDto): Promise<string> {
+	processPayment(processorType: 'default' | 'fallback', data: PaymentDto): void {
 		const payment = this.newPayment(data);
 
-		try {
-			const response = await lastValueFrom(
-				this.httpService.post(`${this.defaultProcessorUrl}/payments`, payment),
-			);
+		this.httpService.post(this.processorPaymentUrl[processorType], payment)
+			.pipe(
+				catchError((error) => {
+					if (error?.response?.status === HttpStatus.INTERNAL_SERVER_ERROR) {
+						this.circuitBreakerService.reportProcessorFailure(processorType);
+					}
+					throw error;
+				}),
+			)
+			.subscribe((response) => {
+				if (response.status === HttpStatus.OK) {
+					this.persistProcessedPaymentAsync(
+						processorType,
+						payment.amount,
+						payment.requestedAt,
+						payment.correlationId,
+					);
+				}
+			});
 
-			if (response.status === 200) {
-				this.persistProcessedPaymentAsync(
-					'default',
-					payment.amount,
-					payment.requestedAt,
-					payment.correlationId,
-				);
-			}
-		} catch (error) {
-			const errorMessage = this.extractErrorMessage(error);
-			this.logger.error(
-				`Error processing payment with default processor: ${errorMessage}`,
-			);
-			
-			if (error?.response?.status === 500) {
-				this.circuitBreakerService.reportProcessorFailure('default');
-			}
-			
-			throw error;
-		}
-
-		return 'Payment processed!';
-	}
-
-	async processFallbackPayment(data: PaymentDto): Promise<string> {
-		const payment = this.newPayment(data);
-
-		try {
-			const response = await lastValueFrom(
-				this.httpService.post(`${this.fallbackProcessorUrl}/payments`, payment),
-			);
-			if (response.status === 200) {
-				this.persistProcessedPaymentAsync(
-					'fallback',
-					payment.amount,
-					payment.requestedAt,
-					payment.correlationId,
-				);
-			}
-		} catch (error) {
-			const errorMessage = this.extractErrorMessage(error);
-			this.logger.error(
-				`Error processing payment with fallback processor: ${errorMessage}`,
-			);
-			
-			if (error?.response?.status === 500) {
-				this.circuitBreakerService.reportProcessorFailure('fallback');
-			}
-			
-			throw error;
-		}
-
-		return 'Payment fallback processed!';
+		return;
 	}
 
 	private extractErrorMessage(error: any): string {

@@ -8,6 +8,11 @@ import {
 } from '../processor/circuit-breaker.service';
 import { ProcessorService } from '../processor/processor.service';
 
+export enum PaymentProcessor {
+	DEFAULT = 'default',
+	FALLBACK = 'fallback',
+}
+
 @Injectable()
 @Processor('payment')
 export class PaymentConsumer extends WorkerHost {
@@ -20,41 +25,23 @@ export class PaymentConsumer extends WorkerHost {
 		super();
 	}
 
-	async process(job: Job<PaymentDto>): Promise<string | void> {
+	process(job: Job<PaymentDto>): Promise<void> {
 		const currentColor = this.circuitBreakerService.getCurrentColor();
 
 		if (currentColor === CircuitBreakerColor.RED) {
-			throw new Error('CIRCUIT_BREAKER_RED');
+			return Promise.reject(new Error(CircuitBreakerColor.RED));
 		}
 
-		try {
-			let result: string;
-
-			if (currentColor === CircuitBreakerColor.GREEN) {
-				result = await this.processorService.processPayment(job.data);
-			} else if (currentColor === CircuitBreakerColor.YELLOW) {
-				result = await this.processorService.processFallbackPayment(job.data);
-			} else {
-				throw new Error(`Unknown circuit breaker color`);
-			}
-
-			return result;
-		} catch (error) {
-			const errorMessage = this.extractErrorMessage(error);
-			this.logger.error(
-				`Payment processing failed (${currentColor}): ${job.data.correlationId} - ${errorMessage}`,
-			);
-			throw error;
+		if (currentColor === CircuitBreakerColor.GREEN) {
+			this.processorService.processPayment(PaymentProcessor.DEFAULT, job.data);
+			return Promise.resolve();
 		}
-	}
 
-	private extractErrorMessage(error: any): string {
-		if (error?.response) {
-			return `HTTP ${error.response.status} - ${error.response.statusText || 'Unknown'} (${error.config?.url || 'unknown URL'})`;
+		if (currentColor === CircuitBreakerColor.YELLOW) {
+			this.processorService.processPayment(PaymentProcessor.FALLBACK, job.data);
+			return Promise.resolve();
 		}
-		if (error?.code) {
-			return `${error.code}: ${error.message}`;
-		}
-		return error?.message || 'Unknown error';
+
+		throw new Error(`Unknown circuit breaker color`);
 	}
 }
