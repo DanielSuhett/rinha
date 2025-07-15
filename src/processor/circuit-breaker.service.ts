@@ -19,6 +19,10 @@ export interface ProcessorHealth {
 export class CircuitBreakerService {
 	private readonly logger = new Logger(CircuitBreakerService.name);
 	private currentColor: CircuitBreakerColor = CircuitBreakerColor.GREEN;
+	private processor: {
+		default: string;
+		fallback: string;
+	};
 	private paymentHealth: ProcessorHealth = {
 		failing: false,
 		minResponseTime: 0,
@@ -31,10 +35,6 @@ export class CircuitBreakerService {
 	constructor(
 		private readonly httpService: HttpService,
 		private readonly configService: ConfigService,
-		private readonly processor: {
-			default: string;
-			fallback: string;
-		}
 	) {
 		this.processor = {
 			default: `${this.configService.getProcessorDefaultUrl()}/payments/service-health`,
@@ -63,6 +63,10 @@ export class CircuitBreakerService {
 				}
 				return { data: { minResponseTime: 0, failing: true } };
 			});
+
+			if (!defaultResponse || !fallbackResponse) {
+				return;
+			}
 
 			this.paymentHealth = defaultResponse?.data || { minResponseTime: 0, failing: true };
 			this.fallbackHealth = fallbackResponse?.data || { minResponseTime: 0, failing: true };

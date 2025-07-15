@@ -2,6 +2,7 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PaymentDto } from '../payment/payment.dto';
 import { HttpService } from '@nestjs/axios';
 import { catchError } from 'rxjs';
+import { EMPTY } from 'rxjs';
 import { ConfigService } from '../config/config.service';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
@@ -10,8 +11,13 @@ import { CircuitBreakerService } from './circuit-breaker.service';
 @Injectable()
 export class ProcessorService {
 	private readonly PROCESSED_PAYMENTS_PREFIX = 'processed:payments';
-	private readonly BATCH_SIZE = 50;
+	private readonly BATCH_SIZE = 100;
 	private readonly BATCH_TIMEOUT = 1000;
+
+	private processorPaymentUrl: {
+		default: string;
+		fallback: string;
+	};
 
 	private pendingPayments: Array<{
 		processorType: 'default' | 'fallback';
@@ -27,10 +33,6 @@ export class ProcessorService {
 		@InjectRedis() private readonly redis: Redis,
 		private readonly logger: Logger,
 		private readonly circuitBreakerService: CircuitBreakerService,
-		private readonly processorPaymentUrl: {
-			default: string;
-			fallback: string;
-		}
 	) {
 		this.processorPaymentUrl = {
 			default: this.configService.getProcessorDefaultUrl() + '/payments',
@@ -58,17 +60,23 @@ export class ProcessorService {
 					if (error?.response?.status === HttpStatus.INTERNAL_SERVER_ERROR) {
 						this.circuitBreakerService.reportProcessorFailure(processorType);
 					}
-					throw error;
+
+					return EMPTY;
 				}),
 			)
-			.subscribe((response) => {
-				if (response.status === HttpStatus.OK) {
-					this.persistProcessedPaymentAsync(
-						processorType,
-						payment.amount,
-						payment.requestedAt,
-						payment.correlationId,
-					);
+			.subscribe({
+				next: (response) => {
+					if (response.status === HttpStatus.OK) {
+						this.persistProcessedPaymentAsync(
+							processorType,
+							payment.amount,
+							payment.requestedAt,
+							payment.correlationId,
+						);
+					}
+				},
+				error: () => {
+					return EMPTY;
 				}
 			});
 

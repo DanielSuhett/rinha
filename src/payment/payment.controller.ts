@@ -21,12 +21,12 @@ export class PaymentController {
 		private readonly processorService: ProcessorService,
 		private readonly httpService: HttpService,
 		private readonly configService: ConfigService,
-	) {}
+	) { }
 
 	@Post('payments')
 	async createPayment(@Body() payment: PaymentDto) {
 		await this.paymentQueue.add('payment', payment, {
-			attempts: 4,
+			attempts: 3,
 			backoff: { type: 'exponential', delay: 3000 },
 		});
 		return { message: 'Payment queued for processing' };
