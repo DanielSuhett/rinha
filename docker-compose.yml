@@ -15,7 +15,7 @@ services:
       resources:
         limits:
           cpus: "0.15"
-          memory: "15MB"
+          memory: "55MB"
 
   api1:
     build:
@@ -165,7 +165,7 @@ services:
       resources:
         limits:
           cpus: "0.25"
-          memory: "190MB"
+          memory: "150MB"
 
 networks:
   backend:
