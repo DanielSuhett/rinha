@@ -11,7 +11,7 @@ import { CircuitBreakerService } from './circuit-breaker.service';
 @Injectable()
 export class ProcessorService {
 	private readonly PROCESSED_PAYMENTS_PREFIX = 'processed:payments';
-	private readonly BATCH_SIZE = 100;
+	private readonly BATCH_SIZE = 25;
 	private readonly BATCH_TIMEOUT = 1000;
 
 	private processorPaymentUrl: {
@@ -138,25 +138,16 @@ export class ProcessorService {
 
 		try {
 			const pipeline = this.redis.pipeline();
-			const processedKeys = new Set<string>();
 
 			for (const payment of paymentsToProcess) {
 				const timestamp = new Date(payment.requestedAt).getTime();
-				const paymentRecord = {
-					amount: payment.amount,
-					requestedAt: payment.requestedAt,
-					processorType: payment.processorType,
-					timestamp,
-					correlationId: payment.correlationId,
-				};
-
 				const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${payment.processorType}:timeline`;
+				const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${payment.processorType}:stats`;
 
-				pipeline.zadd(timelineKey, timestamp, JSON.stringify(paymentRecord));
+				pipeline.zadd(timelineKey, timestamp, `${payment.amount}:${payment.correlationId}`);
 
-				if (!processedKeys.has(timelineKey)) {
-					processedKeys.add(timelineKey);
-				}
+				pipeline.hincrby(statsKey, 'count', 1);
+				pipeline.hincrbyfloat(statsKey, 'total', payment.amount);
 			}
 
 			await pipeline.exec();
@@ -184,17 +175,10 @@ export class ProcessorService {
 			const fromTime = fromDate?.getTime() ?? undefined;
 			const toTime = toDate?.getTime() ?? undefined;
 
-			const defaultRecords = await this.getProcessedPaymentRecords(
-				'default',
-				fromTime,
-				toTime,
-			);
-
-			const fallbackRecords = await this.getProcessedPaymentRecords(
-				'fallback',
-				fromTime,
-				toTime,
-			);
+			const [defaultRecords, fallbackRecords] = await Promise.all([
+				this.getProcessedPaymentRecords('default', fromTime, toTime),
+				this.getProcessedPaymentRecords('fallback', fromTime, toTime),
+			]);
 
 			return {
 				default: defaultRecords,
@@ -215,51 +199,54 @@ export class ProcessorService {
 		try {
 			const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:timeline`;
 
-			let paymentList: string[];
+			let timelineData: string[];
 
 			if (fromTime !== undefined || toTime !== undefined) {
 				const min = fromTime ?? 0;
 				const max = toTime ?? '+inf';
 
-				paymentList = await Promise.race([
-					this.redis.zrangebyscore(timelineKey, min, max),
+				timelineData = await Promise.race([
+					this.redis.zrangebyscore(timelineKey, min, max, 'WITHSCORES'),
 					new Promise<string[]>((_, reject) =>
 						setTimeout(
 							() => reject(new Error('Redis operation timeout')),
-							2000,
+							10000,
 						),
 					),
 				]);
 			} else {
-				paymentList = await Promise.race([
-					this.redis.zrange(timelineKey, 0, -1),
+				timelineData = await Promise.race([
+					this.redis.zrange(timelineKey, 0, -1, 'WITHSCORES'),
 					new Promise<string[]>((_, reject) =>
 						setTimeout(
 							() => reject(new Error('Redis operation timeout')),
-							2000,
+							10000,
 						),
 					),
 				]);
 			}
 
-			if (paymentList.length === 0) {
+			if (timelineData.length === 0) {
 				return [];
 			}
 
-			const payments = paymentList
-				.map((paymentStr) => {
-					try {
-						return JSON.parse(paymentStr);
-					} catch (error) {
-						this.logger.error(
-							`Failed to parse payment JSON: ${paymentStr} - ${error?.message || 'Unknown parsing error'}`,
-						);
-						return null;
-					}
-				})
-				.filter(Boolean);
+			const records: any[] = [];
+			for (let i = 0; i < timelineData.length; i += 2) {
+				const memberData = timelineData[i].split(':');
+				const amount = parseFloat(memberData[0]);
+				const correlationId = memberData[1];
+				const timestamp = parseInt(timelineData[i + 1], 10);
 
-			return payments;
+				records.push({
+					amount,
+					timestamp,
+					requestedAt: new Date(timestamp).toISOString(),
+					processorType,
+					correlationId,
+				});
+			}
+
+			return records;
 		} catch (error) {
 			const errorMessage = this.extractErrorMessage(error);
 			this.logger.error(
@@ -283,17 +270,11 @@ export class ProcessorService {
 			const fromTime = fromDate?.getTime() ?? undefined;
 			const toTime = toDate?.getTime() ?? undefined;
 
-			const defaultStats = await this.getProcessedPaymentStats(
-				'default',
-				fromTime,
-				toTime,
-			);
 
-			const fallbackStats = await this.getProcessedPaymentStats(
-				'fallback',
-				fromTime,
-				toTime,
-			);
+			const [defaultStats, fallbackStats] = await Promise.all([
+				this.getProcessedPaymentStats('default', fromTime, toTime),
+				this.getProcessedPaymentStats('fallback', fromTime, toTime),
+			]);
 
 			const result = {
 				default: defaultStats,
@@ -314,57 +295,48 @@ export class ProcessorService {
 		toTime?: number,
 	): Promise<{ totalRequests: number; totalAmount: number }> {
 		try {
-			const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:timeline`;
+			const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:stats`;
 
-			let paymentList: string[];
-
-			if (fromTime !== undefined || toTime !== undefined) {
-				const min = fromTime ?? 0;
-				const max = toTime ?? '+inf';
-
-				paymentList = await Promise.race([
-					this.redis.zrangebyscore(timelineKey, min, max),
+			if (fromTime === undefined && toTime === undefined) {
+				const [countStr, totalStr] = await Promise.race([
+					this.redis.hmget(statsKey, 'count', 'total'),
 					new Promise<string[]>((_, reject) =>
 						setTimeout(
 							() => reject(new Error('Redis operation timeout')),
-							2000,
+							10000,
 						),
 					),
 				]);
-			} else {
-				paymentList = await Promise.race([
-					this.redis.zrange(timelineKey, 0, -1),
-					new Promise<string[]>((_, reject) =>
-						setTimeout(
-							() => reject(new Error('Redis operation timeout')),
-							2000,
-						),
-					),
-				]);
+
+				return {
+					totalRequests: parseInt(countStr || '0', 10),
+					totalAmount: parseFloat(totalStr || '0'),
+				};
 			}
 
-			if (paymentList.length === 0) {
+			const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:timeline`;
+			const min = fromTime ?? 0;
+			const max = toTime ?? '+inf';
+
+			const amounts = await Promise.race([
+				this.redis.zrangebyscore(timelineKey, min, max),
+				new Promise<string[]>((_, reject) =>
+					setTimeout(
+						() => reject(new Error('Redis operation timeout')),
+						10000,
+					),
+				),
+			]);
+
+			if (amounts.length === 0) {
 				return { totalRequests: 0, totalAmount: 0 };
 			}
 
-			const payments = paymentList
-				.map((paymentStr) => {
-					try {
-						return JSON.parse(paymentStr);
-					} catch (error) {
-						this.logger.error(
-							`Failed to parse payment JSON: ${paymentStr} - ${error?.message || 'Unknown parsing error'}`,
-						);
-						return null;
-					}
-				})
-				.filter(Boolean);
-
-			const totalRequests = payments.length;
-			const totalAmount = payments.reduce(
-				(sum, payment) => sum + payment.amount,
-				0,
-			);
+			const totalRequests = amounts.length;
+			const totalAmount = amounts.reduce((sum, memberStr) => {
+				const amount = parseFloat(memberStr.split(':')[0]);
+				return sum + amount;
+			}, 0);
 
 			return {
 				totalRequests,
