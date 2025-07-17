@@ -1,47 +1,44 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { JOB_REF, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject } from '@nestjs/common';
 import { PaymentDto } from './payment.dto';
 import {
 	CircuitBreakerService,
 	CircuitBreakerColor,
-} from '../processor/circuit-breaker.service';
+} from '../common/circuit-breaker';
 import { ProcessorService } from '../processor/processor.service';
 
 export enum PaymentProcessor {
 	DEFAULT = 'default',
 	FALLBACK = 'fallback',
 }
-
-@Injectable()
-@Processor('payment')
+@Processor({
+	name: 'payment',
+}, {
+	autorun: process.env.APP_MODE === 'CONSUMER',
+})
 export class PaymentConsumer extends WorkerHost {
-	private readonly logger = new Logger(PaymentConsumer.name);
-
 	constructor(
 		private readonly processorService: ProcessorService,
 		private readonly circuitBreakerService: CircuitBreakerService,
+		@Inject(JOB_REF) private job: Job<PaymentDto>,
 	) {
 		super();
 	}
 
-	process(job: Job<PaymentDto>): Promise<void> {
+	async process() {
 		const currentColor = this.circuitBreakerService.getCurrentColor();
 
 		if (currentColor === CircuitBreakerColor.RED) {
-			return Promise.reject(new Error(CircuitBreakerColor.RED));
+			return Promise.reject(new Error('Circuit breaker: ' + currentColor));
 		}
 
 		if (currentColor === CircuitBreakerColor.GREEN) {
-			this.processorService.processPayment(PaymentProcessor.DEFAULT, job.data);
-			return Promise.resolve();
+			return this.processorService.processPayment(PaymentProcessor.DEFAULT, this.job.data);
 		}
 
 		if (currentColor === CircuitBreakerColor.YELLOW) {
-			this.processorService.processPayment(PaymentProcessor.FALLBACK, job.data);
-			return Promise.resolve();
+			return this.processorService.processPayment(PaymentProcessor.FALLBACK, this.job.data);
 		}
-
-		throw new Error(`Unknown circuit breaker color`);
 	}
 }

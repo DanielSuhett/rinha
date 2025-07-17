@@ -1,9 +1,9 @@
 import { Module, DynamicModule } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
-import { HttpModule } from '@nestjs/axios';
 import { PaymentController } from './payment.controller';
 import { PaymentConsumer } from './payment.processor';
 import { ProcessorModule } from '../processor/processor.module';
+import { CircuitBreakerModule } from '../common/circuit-breaker';
 import { ConfigModule } from '../config/config.module';
 
 @Module({})
@@ -16,11 +16,8 @@ export class PaymentModule {
 					name: 'payment',
 				}),
 				ConfigModule,
-				HttpModule.register({
-					timeout: 10000,
-					maxRedirects: 5,
-				}),
 				ProcessorModule.forProducer(),
+				CircuitBreakerModule.forProducer(),
 			],
 			controllers: [PaymentController],
 		};
@@ -34,11 +31,8 @@ export class PaymentModule {
 					name: 'payment',
 				}),
 				ConfigModule,
-				HttpModule.register({
-					timeout: 10000,
-					maxRedirects: 5,
-				}),
 				ProcessorModule.forConsumer(),
+				CircuitBreakerModule.forConsumer(),
 			],
 			providers: [PaymentConsumer],
 		};

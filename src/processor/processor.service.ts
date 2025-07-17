@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PaymentDto } from '../payment/payment.dto';
 import { HttpService } from '@nestjs/axios';
 import { catchError } from 'rxjs';
@@ -6,12 +6,11 @@ import { EMPTY } from 'rxjs';
 import { ConfigService } from '../config/config.service';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
-import { CircuitBreakerService } from './circuit-breaker.service';
 
 @Injectable()
-export class ProcessorService {
+export class ProcessorService implements OnModuleInit {
 	private readonly PROCESSED_PAYMENTS_PREFIX = 'processed:payments';
-	private readonly BATCH_SIZE = 25;
+	private readonly BATCH_SIZE = 50;
 	private readonly BATCH_TIMEOUT = 1000;
 
 	private processorPaymentUrl: {
@@ -32,12 +31,14 @@ export class ProcessorService {
 		private readonly configService: ConfigService,
 		@InjectRedis() private readonly redis: Redis,
 		private readonly logger: Logger,
-		private readonly circuitBreakerService: CircuitBreakerService,
-	) {
+	) { }
+
+	onModuleInit() {
+		const processorUrls = this.configService.getProcessorUrls();
 		this.processorPaymentUrl = {
-			default: this.configService.getProcessorDefaultUrl() + '/payments',
-			fallback: this.configService.getProcessorFallbackUrl() + '/payments',
-		}
+			default: `${processorUrls.default}/payments`,
+			fallback: `${processorUrls.fallback}/payments`,
+		};
 	}
 
 	newPayment(paymentDto: PaymentDto) {
@@ -57,10 +58,6 @@ export class ProcessorService {
 		this.httpService.post(this.processorPaymentUrl[processorType], payment)
 			.pipe(
 				catchError((error) => {
-					if (error?.response?.status === HttpStatus.INTERNAL_SERVER_ERROR) {
-						this.circuitBreakerService.reportProcessorFailure(processorType);
-					}
-
 					return EMPTY;
 				}),
 			)
@@ -136,6 +133,7 @@ export class ProcessorService {
 			this.batchTimer = null;
 		}
 
+		const start = Date.now();
 		try {
 			const pipeline = this.redis.pipeline();
 
@@ -151,6 +149,10 @@ export class ProcessorService {
 			}
 
 			await pipeline.exec();
+			const elapsed = Date.now() - start;
+			if (elapsed > 10) {
+				this.logger.debug(`🛑Redis write took ${elapsed}ms`);
+			}
 		} catch (error) {
 			const correlationIds = paymentsToProcess
 				.map((p) => p.correlationId)

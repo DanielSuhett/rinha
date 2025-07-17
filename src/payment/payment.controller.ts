@@ -25,18 +25,29 @@ export class PaymentController {
 
 	@Post('payments')
 	async createPayment(@Body() payment: PaymentDto) {
+		const start = Date.now();
+
 		await this.paymentQueue.add('payment', payment, {
-			attempts: 3,
-			backoff: { type: 'exponential', delay: 3000 },
+			attempts: 2,
+			backoff: { type: 'fixed', delay: 5000 },
 		});
-		return { message: 'Payment queued for processing' };
+
+		const elapsed = Date.now() - start;
+		if (elapsed > 10) {
+			this.logger.debug(`createPayment: Queuing took ${elapsed}ms`);
+			return { message: 'Payment queued for processing' };
+		}
 	}
 
 	@Get('payments-summary')
 	async getPaymentSummary(
 		@Query() query: PaymentSummaryQueryDto,
 	): Promise<PaymentSummaryResponseDto> {
-		return await this.processorService.getPaymentSummary(query.from, query.to);
+		const start = Date.now();
+		const result = await this.processorService.getPaymentSummary(query.from, query.to);
+		const elapsed = Date.now() - start;
+		this.logger.debug(`getPaymentSummary: Processing took ${elapsed}ms`);
+		return result;
 	}
 
 	@Post('purge-payments')

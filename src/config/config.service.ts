@@ -4,9 +4,15 @@ import { validateEnvironment, Environment } from './environment.config';
 @Injectable()
 export class ConfigService {
 	private readonly config: Environment;
+	private static _instance: ConfigService;
 
 	constructor() {
+		if (ConfigService._instance) {
+			return ConfigService._instance;
+		}
+
 		this.config = validateEnvironment();
+		ConfigService._instance = this;
 	}
 
 	getConfig(): Environment {
@@ -36,4 +42,18 @@ export class ConfigService {
 	getProcessorFallbackUrl(): string {
 		return this.config.PROCESSOR_FALLBACK_URL;
 	}
-} 
+
+	getRedisConfig() {
+		return {
+			host: this.config.REDIS_HOST,
+			port: this.config.REDIS_PORT,
+		};
+	}
+
+	getProcessorUrls() {
+		return {
+			default: this.config.PROCESSOR_DEFAULT_URL,
+			fallback: this.config.PROCESSOR_FALLBACK_URL,
+		};
+	}
+}
