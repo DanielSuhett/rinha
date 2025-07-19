@@ -5,8 +5,6 @@ import { ConfigService } from './config/config.service';
 import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
-  const startTime = Date.now();
-
   const app = await NestFactory.create(AppModule.forRoot());
 
   const configService = app.get(ConfigService);
@@ -18,17 +16,7 @@ async function bootstrap() {
   }));
 
   const port = configService.getAppPort();
-  const appMode = configService.getAppMode();
 
   await app.listen(port, '0.0.0.0');
-
-  const startupTime = Date.now() - startTime;
-
-  if (appMode === 'PRODUCER') {
-    console.log(`🔄 Producer mode: Handling HTTP requests and queuing jobs (startup: ${startupTime}ms)`);
-  } else {
-    console.log(`⚡ Consumer mode: Processing jobs from queue (startup: ${startupTime}ms)`);
-  }
 }
-
 bootstrap();

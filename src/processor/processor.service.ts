@@ -6,358 +6,407 @@ import { EMPTY } from 'rxjs';
 import { ConfigService } from '../config/config.service';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
+import { CircuitBreakerColor, CircuitBreakerService } from 'src/common/circuit-breaker/circuit-breaker.service';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 
 @Injectable()
 export class ProcessorService implements OnModuleInit {
-	private readonly PROCESSED_PAYMENTS_PREFIX = 'processed:payments';
-	private readonly BATCH_SIZE = 50;
-	private readonly BATCH_TIMEOUT = 1000;
+  private readonly PROCESSED_PAYMENTS_PREFIX = 'processed:payments';
+  private readonly BATCH_SIZE = 50;
+  private readonly BATCH_TIMEOUT = 1000;
 
-	private processorPaymentUrl: {
-		default: string;
-		fallback: string;
-	};
+  private processorPaymentUrl: {
+    default: string;
+    fallback: string;
+  };
 
-	private pendingPayments: Array<{
-		processorType: 'default' | 'fallback';
-		amount: number;
-		requestedAt: string;
-		correlationId: string;
-	}> = [];
-	private batchTimer: NodeJS.Timeout | null = null;
+  private pendingPayments: Array<{
+    processorType: 'default' | 'fallback';
+    amount: number;
+    requestedAt: string;
+    correlationId: string;
+  }> = [];
+  private batchTimer: NodeJS.Timeout | null = null;
 
-	constructor(
-		private readonly httpService: HttpService,
-		private readonly configService: ConfigService,
-		@InjectRedis() private readonly redis: Redis,
-		private readonly logger: Logger,
-	) { }
+  constructor(
+    @InjectQueue('payment') private readonly paymentQueue: Queue,
+    private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
+    @InjectRedis() private readonly redis: Redis,
+    private readonly logger: Logger,
+    private readonly circuitBreakerService: CircuitBreakerService,
+  ) { }
 
-	onModuleInit() {
-		const processorUrls = this.configService.getProcessorUrls();
-		this.processorPaymentUrl = {
-			default: `${processorUrls.default}/payments`,
-			fallback: `${processorUrls.fallback}/payments`,
-		};
-	}
+  onModuleInit() {
+    const processorUrls = this.configService.getProcessorUrls();
+    this.processorPaymentUrl = {
+      default: `${processorUrls.default}/payments`,
+      fallback: `${processorUrls.fallback}/payments`,
+    };
+  }
 
-	newPayment(paymentDto: PaymentDto) {
-		const requestedAt = new Date().toISOString();
+  newPayment(paymentDto: PaymentDto) {
+    const requestedAt = new Date().toISOString();
 
-		const payment = {
-			...paymentDto,
-			requestedAt,
-		};
+    const payment = {
+      ...paymentDto,
+      requestedAt,
+    };
 
-		return payment;
-	}
+    return payment;
+  }
 
-	processPayment(processorType: 'default' | 'fallback', data: PaymentDto): void {
-		const payment = this.newPayment(data);
+  private retryAfterSignal(processorType: 'default' | 'fallback', data: PaymentDto): void {
+    const payment = this.newPayment(data);
+    this.httpService.post(this.processorPaymentUrl[processorType], payment)
+      .pipe(
+        catchError((error) => {
+          this.requeuePayment(processorType, data);
+          return EMPTY;
+        })
+      )
+      .subscribe({
+        next: (response) => {
+          if (response.status === HttpStatus.OK) {
+            this.logger.debug('recovered from signal');
+            this.persistProcessedPaymentAsync(processorType, payment.amount, payment.requestedAt, payment.correlationId);
+          }
+        },
+        error: () => {
+          this.logger.error(`error to signal: ${processorType} error`);
+          this.requeuePayment(processorType, data);
+          return EMPTY;
+        }
+      });
+  }
 
-		this.httpService.post(this.processorPaymentUrl[processorType], payment)
-			.pipe(
-				catchError((error) => {
-					return EMPTY;
-				}),
-			)
-			.subscribe({
-				next: (response) => {
-					if (response.status === HttpStatus.OK) {
-						this.persistProcessedPaymentAsync(
-							processorType,
-							payment.amount,
-							payment.requestedAt,
-							payment.correlationId,
-						);
-					}
-				},
-				error: () => {
-					return EMPTY;
-				}
-			});
+  private async requeuePayment(processorType: 'default' | 'fallback', data: PaymentDto, delay = 3000): Promise<void> {
+    await this.paymentQueue.add('payment', data, { priority: 1, backoff: { type: 'exponential', delay: 1000 } });
+  }
 
-		return;
-	}
+  processPayment(processorType: 'default' | 'fallback', data: PaymentDto): void {
+    const payment = this.newPayment(data);
 
-	private extractErrorMessage(error: any): string {
-		if (error?.response) {
-			return `HTTP ${error.response.status} - ${error.response.statusText || 'Unknown'} (${error.config?.url || 'unknown URL'})`;
-		}
-		if (error?.code) {
-			return `${error.code}: ${error.message}`;
-		}
-		return error?.message || 'Unknown error';
-	}
+    this.httpService.post(this.processorPaymentUrl[processorType], payment)
+      .pipe(
+        catchError((error) => {
+          this.circuitBreakerService.signal(processorType)
+            .then((color) => {
+              if (!color) {
+                this.logger.error(`loss processor: ${processorType}`);
+                return EMPTY;
+              }
 
-	private persistProcessedPaymentAsync(
-		processorType: 'default' | 'fallback',
-		amount: number,
-		requestedAt: string,
-		correlationId: string,
-	) {
-		this.pendingPayments.push({
-			processorType,
-			amount,
-			requestedAt,
-			correlationId,
-		});
+              if (color === CircuitBreakerColor.RED) {
+                this.requeuePayment(processorType, data);
+                return EMPTY;
+              }
 
-		if (this.pendingPayments.length >= this.BATCH_SIZE) {
-			this.flushBatch().catch((e) => {
-				this.logger.error(
-					`Error flushing batch: ${this.extractErrorMessage(e)}`,
-				);
-			});
-		} else if (!this.batchTimer) {
-			this.batchTimer = setTimeout(() => {
-				this.flushBatch().catch((e) => {
-					this.logger.error(
-						`Error flushing batch: ${this.extractErrorMessage(e)}`,
-					);
-				});
-			}, this.BATCH_TIMEOUT);
-		}
-	}
+              this.retryAfterSignal(processorType, data);
+            })
 
-	private async flushBatch(): Promise<void> {
-		if (this.pendingPayments.length === 0) {
-			return;
-		}
+          return EMPTY;
+        }),
+      )
+      .subscribe({
+        next: (response) => {
+          if (response.status === HttpStatus.OK) {
+            this.persistProcessedPaymentAsync(
+              processorType,
+              payment.amount,
+              payment.requestedAt,
+              payment.correlationId,
+            );
+          }
+        },
+        error: () => {
+          this.logger.error(`error to store: ${processorType} error`);
+          return EMPTY;
+        }
+      });
 
-		const paymentsToProcess = [...this.pendingPayments];
-		this.pendingPayments = [];
+    return;
+  }
 
-		if (this.batchTimer) {
-			clearTimeout(this.batchTimer);
-			this.batchTimer = null;
-		}
+  private extractErrorMessage(error: any): string {
+    if (error?.response) {
+      return `HTTP ${error.response.status} - ${error.response.statusText || 'Unknown'} (${error.config?.url || 'unknown URL'})`;
+    }
+    if (error?.code) {
+      return `${error.code}: ${error.message}`;
+    }
+    return error?.message || 'Unknown error';
+  }
 
-		const start = Date.now();
-		try {
-			const pipeline = this.redis.pipeline();
+  private persistProcessedPaymentAsync(
+    processorType: 'default' | 'fallback',
+    amount: number,
+    requestedAt: string,
+    correlationId: string,
+  ) {
+    this.pendingPayments.push({
+      processorType,
+      amount,
+      requestedAt,
+      correlationId,
+    });
 
-			for (const payment of paymentsToProcess) {
-				const timestamp = new Date(payment.requestedAt).getTime();
-				const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${payment.processorType}:timeline`;
-				const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${payment.processorType}:stats`;
+    if (this.pendingPayments.length >= this.BATCH_SIZE) {
+      this.flushBatch().catch((e) => {
+        this.logger.error(
+          `Error flushing batch: ${this.extractErrorMessage(e)}`,
+        );
+      });
+    } else if (!this.batchTimer) {
+      this.batchTimer = setTimeout(() => {
+        this.flushBatch().catch((e) => {
+          this.logger.error(
+            `Error flushing batch: ${this.extractErrorMessage(e)}`,
+          );
+        });
+      }, this.BATCH_TIMEOUT);
+    }
+  }
 
-				pipeline.zadd(timelineKey, timestamp, `${payment.amount}:${payment.correlationId}`);
+  private async flushBatch(): Promise<void> {
+    if (this.pendingPayments.length === 0) {
+      return;
+    }
 
-				pipeline.hincrby(statsKey, 'count', 1);
-				pipeline.hincrbyfloat(statsKey, 'total', payment.amount);
-			}
+    const paymentsToProcess = [...this.pendingPayments];
+    this.pendingPayments = [];
 
-			await pipeline.exec();
-			const elapsed = Date.now() - start;
-			if (elapsed > 10) {
-				this.logger.debug(`🛑Redis write took ${elapsed}ms`);
-			}
-		} catch (error) {
-			const correlationIds = paymentsToProcess
-				.map((p) => p.correlationId)
-				.join(', ');
-			this.logger.error(
-				`Failed to persist payment batch [${correlationIds}]: ${this.extractErrorMessage(error)}`,
-			);
-		}
-	}
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
 
-	async getPaymentRecords(
-		from?: string,
-		to?: string,
-	): Promise<{
-		default: any[];
-		fallback: any[];
-	}> {
-		try {
-			const fromDate = from ? new Date(from) : undefined;
-			const toDate = to ? new Date(to) : undefined;
+    const start = Date.now();
+    try {
+      const pipeline = this.redis.pipeline();
 
-			const fromTime = fromDate?.getTime() ?? undefined;
-			const toTime = toDate?.getTime() ?? undefined;
+      for (const payment of paymentsToProcess) {
+        const timestamp = new Date(payment.requestedAt).getTime();
+        const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${payment.processorType}:timeline`;
+        const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${payment.processorType}:stats`;
 
-			const [defaultRecords, fallbackRecords] = await Promise.all([
-				this.getProcessedPaymentRecords('default', fromTime, toTime),
-				this.getProcessedPaymentRecords('fallback', fromTime, toTime),
-			]);
+        pipeline.zadd(timelineKey, timestamp, `${payment.amount}:${payment.correlationId}`);
 
-			return {
-				default: defaultRecords,
-				fallback: fallbackRecords,
-			};
-		} catch (error) {
-			const errorMessage = this.extractErrorMessage(error);
-			this.logger.error(`Error in getPaymentRecords: ${errorMessage}`);
-			throw error;
-		}
-	}
+        pipeline.hincrby(statsKey, 'count', 1);
+        pipeline.hincrbyfloat(statsKey, 'total', payment.amount);
+      }
 
-	private async getProcessedPaymentRecords(
-		processorType: 'default' | 'fallback',
-		fromTime?: number,
-		toTime?: number,
-	): Promise<any[]> {
-		try {
-			const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:timeline`;
+      await pipeline.exec();
+      const elapsed = Date.now() - start;
+      if (elapsed > 10) {
+        this.logger.debug(`🛑 Redis write took ${elapsed}ms`);
+      }
+    } catch (error) {
+      const correlationIds = paymentsToProcess
+        .map((p) => p.correlationId)
+        .join(', ');
+      this.logger.error(
+        `Failed to persist payment batch [${correlationIds}]: ${this.extractErrorMessage(error)}`,
+      );
+    }
+  }
 
-			let timelineData: string[];
+  async getPaymentRecords(
+    from?: string,
+    to?: string,
+  ): Promise<{
+    default: any[];
+    fallback: any[];
+  }> {
+    try {
+      const fromDate = from ? new Date(from) : undefined;
+      const toDate = to ? new Date(to) : undefined;
 
-			if (fromTime !== undefined || toTime !== undefined) {
-				const min = fromTime ?? 0;
-				const max = toTime ?? '+inf';
+      const fromTime = fromDate?.getTime() ?? undefined;
+      const toTime = toDate?.getTime() ?? undefined;
 
-				timelineData = await Promise.race([
-					this.redis.zrangebyscore(timelineKey, min, max, 'WITHSCORES'),
-					new Promise<string[]>((_, reject) =>
-						setTimeout(
-							() => reject(new Error('Redis operation timeout')),
-							10000,
-						),
-					),
-				]);
-			} else {
-				timelineData = await Promise.race([
-					this.redis.zrange(timelineKey, 0, -1, 'WITHSCORES'),
-					new Promise<string[]>((_, reject) =>
-						setTimeout(
-							() => reject(new Error('Redis operation timeout')),
-							10000,
-						),
-					),
-				]);
-			}
+      const [defaultRecords, fallbackRecords] = await Promise.all([
+        this.getProcessedPaymentRecords('default', fromTime, toTime),
+        this.getProcessedPaymentRecords('fallback', fromTime, toTime),
+      ]);
 
-			if (timelineData.length === 0) {
-				return [];
-			}
+      return {
+        default: defaultRecords,
+        fallback: fallbackRecords,
+      };
+    } catch (error) {
+      const errorMessage = this.extractErrorMessage(error);
+      this.logger.error(`Error in getPaymentRecords: ${errorMessage}`);
+      throw error;
+    }
+  }
 
-			const records: any[] = [];
-			for (let i = 0; i < timelineData.length; i += 2) {
-				const memberData = timelineData[i].split(':');
-				const amount = parseFloat(memberData[0]);
-				const correlationId = memberData[1];
-				const timestamp = parseInt(timelineData[i + 1], 10);
+  private async getProcessedPaymentRecords(
+    processorType: 'default' | 'fallback',
+    fromTime?: number,
+    toTime?: number,
+  ): Promise<any[]> {
+    try {
+      const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:timeline`;
 
-				records.push({
-					amount,
-					timestamp,
-					requestedAt: new Date(timestamp).toISOString(),
-					processorType,
-					correlationId,
-				});
-			}
+      let timelineData: string[];
 
-			return records;
-		} catch (error) {
-			const errorMessage = this.extractErrorMessage(error);
-			this.logger.error(
-				`Error getting processor records for ${processorType}: ${errorMessage}`,
-			);
-			return [];
-		}
-	}
+      if (fromTime !== undefined || toTime !== undefined) {
+        const min = fromTime ?? 0;
+        const max = toTime ?? '+inf';
 
-	async getPaymentSummary(
-		from?: string,
-		to?: string,
-	): Promise<{
-		default: { totalRequests: number; totalAmount: number };
-		fallback: { totalRequests: number; totalAmount: number };
-	}> {
-		try {
-			const fromDate = from ? new Date(from) : undefined;
-			const toDate = to ? new Date(to) : undefined;
+        timelineData = await Promise.race([
+          this.redis.zrangebyscore(timelineKey, min, max, 'WITHSCORES'),
+          new Promise<string[]>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Redis operation timeout')),
+              10000,
+            ),
+          ),
+        ]);
+      } else {
+        timelineData = await Promise.race([
+          this.redis.zrange(timelineKey, 0, -1, 'WITHSCORES'),
+          new Promise<string[]>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Redis operation timeout')),
+              10000,
+            ),
+          ),
+        ]);
+      }
 
-			const fromTime = fromDate?.getTime() ?? undefined;
-			const toTime = toDate?.getTime() ?? undefined;
+      if (timelineData.length === 0) {
+        return [];
+      }
+
+      const records: any[] = [];
+      for (let i = 0; i < timelineData.length; i += 2) {
+        const memberData = timelineData[i].split(':');
+        const amount = parseFloat(memberData[0]);
+        const correlationId = memberData[1];
+        const timestamp = parseInt(timelineData[i + 1], 10);
+
+        records.push({
+          amount,
+          timestamp,
+          requestedAt: new Date(timestamp).toISOString(),
+          processorType,
+          correlationId,
+        });
+      }
+
+      return records;
+    } catch (error) {
+      const errorMessage = this.extractErrorMessage(error);
+      this.logger.error(
+        `Error getting processor records for ${processorType}: ${errorMessage}`,
+      );
+      return [];
+    }
+  }
+
+  async getPaymentSummary(
+    from?: string,
+    to?: string,
+  ): Promise<{
+    default: { totalRequests: number; totalAmount: number };
+    fallback: { totalRequests: number; totalAmount: number };
+  }> {
+    try {
+      const fromDate = from ? new Date(from) : undefined;
+      const toDate = to ? new Date(to) : undefined;
+
+      const fromTime = fromDate?.getTime() ?? undefined;
+      const toTime = toDate?.getTime() ?? undefined;
 
 
-			const [defaultStats, fallbackStats] = await Promise.all([
-				this.getProcessedPaymentStats('default', fromTime, toTime),
-				this.getProcessedPaymentStats('fallback', fromTime, toTime),
-			]);
+      const [defaultStats, fallbackStats] = await Promise.all([
+        this.getProcessedPaymentStats('default', fromTime, toTime),
+        this.getProcessedPaymentStats('fallback', fromTime, toTime),
+      ]);
 
-			const result = {
-				default: defaultStats,
-				fallback: fallbackStats,
-			};
+      const result = {
+        default: defaultStats,
+        fallback: fallbackStats,
+      };
 
-			return result;
-		} catch (error) {
-			const errorMessage = this.extractErrorMessage(error);
-			this.logger.error(`Error in getPaymentSummary: ${errorMessage}`);
-			throw error;
-		}
-	}
+      return result;
+    } catch (error) {
+      const errorMessage = this.extractErrorMessage(error);
+      this.logger.error(`Error in getPaymentSummary: ${errorMessage}`);
+      throw error;
+    }
+  }
 
-	private async getProcessedPaymentStats(
-		processorType: 'default' | 'fallback',
-		fromTime?: number,
-		toTime?: number,
-	): Promise<{ totalRequests: number; totalAmount: number }> {
-		try {
-			const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:stats`;
+  private async getProcessedPaymentStats(
+    processorType: 'default' | 'fallback',
+    fromTime?: number,
+    toTime?: number,
+  ): Promise<{ totalRequests: number; totalAmount: number }> {
+    try {
+      const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:stats`;
 
-			if (fromTime === undefined && toTime === undefined) {
-				const [countStr, totalStr] = await Promise.race([
-					this.redis.hmget(statsKey, 'count', 'total'),
-					new Promise<string[]>((_, reject) =>
-						setTimeout(
-							() => reject(new Error('Redis operation timeout')),
-							10000,
-						),
-					),
-				]);
+      if (fromTime === undefined && toTime === undefined) {
+        const [countStr, totalStr] = await Promise.race([
+          this.redis.hmget(statsKey, 'count', 'total'),
+          new Promise<string[]>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Redis operation timeout')),
+              10000,
+            ),
+          ),
+        ]);
 
-				return {
-					totalRequests: parseInt(countStr || '0', 10),
-					totalAmount: parseFloat(totalStr || '0'),
-				};
-			}
+        return {
+          totalRequests: parseInt(countStr || '0', 10),
+          totalAmount: parseFloat(totalStr || '0'),
+        };
+      }
 
-			const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:timeline`;
-			const min = fromTime ?? 0;
-			const max = toTime ?? '+inf';
+      const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:timeline`;
+      const min = fromTime ?? 0;
+      const max = toTime ?? '+inf';
 
-			const amounts = await Promise.race([
-				this.redis.zrangebyscore(timelineKey, min, max),
-				new Promise<string[]>((_, reject) =>
-					setTimeout(
-						() => reject(new Error('Redis operation timeout')),
-						10000,
-					),
-				),
-			]);
+      const amounts = await Promise.race([
+        this.redis.zrangebyscore(timelineKey, min, max),
+        new Promise<string[]>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Redis operation timeout')),
+            10000,
+          ),
+        ),
+      ]);
 
-			if (amounts.length === 0) {
-				return { totalRequests: 0, totalAmount: 0 };
-			}
+      if (amounts.length === 0) {
+        return { totalRequests: 0, totalAmount: 0 };
+      }
 
-			const totalRequests = amounts.length;
-			const totalAmount = amounts.reduce((sum, memberStr) => {
-				const amount = parseFloat(memberStr.split(':')[0]);
-				return sum + amount;
-			}, 0);
+      const totalRequests = amounts.length;
+      const totalAmount = amounts.reduce((sum, memberStr) => {
+        const amount = parseFloat(memberStr.split(':')[0]);
+        return sum + amount;
+      }, 0);
 
-			return {
-				totalRequests,
-				totalAmount,
-			};
-		} catch (error) {
-			const errorMessage = this.extractErrorMessage(error);
-			this.logger.error(
-				`Error getting processor stats for ${processorType}: ${errorMessage}`,
-			);
-			return { totalRequests: 0, totalAmount: 0 };
-		}
-	}
+      return {
+        totalRequests,
+        totalAmount,
+      };
+    } catch (error) {
+      const errorMessage = this.extractErrorMessage(error);
+      this.logger.error(
+        `Error getting processor stats for ${processorType}: ${errorMessage}`,
+      );
+      return { totalRequests: 0, totalAmount: 0 };
+    }
+  }
 
-	onDestroy(): void {
-		if (this.batchTimer) {
-			clearTimeout(this.batchTimer);
-			this.batchTimer = null;
-		}
-		this.flushBatch();
-	}
+  onDestroy(): void {
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+    this.flushBatch();
+  }
 }

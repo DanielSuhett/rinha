@@ -3,16 +3,13 @@ import { PaymentModule } from './payment/payment.module';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule } from './config/config.module';
 import { ConfigService } from './config/config.service';
-import { ScheduleModule } from '@nestjs/schedule';
 import { HealthModule } from './health/health.module';
 import { SharedModule } from './common/shared.module';
 
 @Module({})
 export class AppModule {
 	static forRoot(): DynamicModule {
-		const appMode = process.env.APP_MODE || 'PRODUCER';
-
-		const commonModules = [
+		const modules = [
 			ConfigModule,
 			SharedModule.forRoot(),
 			BullModule.forRootAsync({
@@ -26,18 +23,10 @@ export class AppModule {
 				}),
 			}),
 			HealthModule,
+			PaymentModule.forRoot(),
 		];
 
-		const modules = [...commonModules];
 
-		if (appMode === 'PRODUCER') {
-			modules.push(PaymentModule.forProducer());
-		} else if (appMode === 'CONSUMER') {
-			modules.push(
-				PaymentModule.forConsumer(),
-				ScheduleModule.forRoot(),
-			);
-		}
 
 		return {
 			module: AppModule,

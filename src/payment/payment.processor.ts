@@ -1,44 +1,47 @@
-import { JOB_REF, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
-import { Inject } from '@nestjs/common';
+import { InjectQueue, JOB_REF, Processor, WorkerHost } from '@nestjs/bullmq';
+import { Job, Queue } from 'bullmq';
+import { Inject, Logger } from '@nestjs/common';
 import { PaymentDto } from './payment.dto';
 import {
-	CircuitBreakerService,
-	CircuitBreakerColor,
+  CircuitBreakerService,
+  CircuitBreakerColor,
 } from '../common/circuit-breaker';
 import { ProcessorService } from '../processor/processor.service';
 
 export enum PaymentProcessor {
-	DEFAULT = 'default',
-	FALLBACK = 'fallback',
+  DEFAULT = 'default',
+  FALLBACK = 'fallback',
 }
 @Processor({
-	name: 'payment',
-}, {
-	autorun: process.env.APP_MODE === 'CONSUMER',
+  name: 'payment',
 })
 export class PaymentConsumer extends WorkerHost {
-	constructor(
-		private readonly processorService: ProcessorService,
-		private readonly circuitBreakerService: CircuitBreakerService,
-		@Inject(JOB_REF) private job: Job<PaymentDto>,
-	) {
-		super();
-	}
+  constructor(
+    private readonly processorService: ProcessorService,
+    private readonly circuitBreakerService: CircuitBreakerService,
+    @Inject(JOB_REF) private job: Job<PaymentDto>,
+    @InjectQueue('payment') private readonly paymentQueue: Queue,
+  ) {
+    super();
+  }
 
-	async process() {
-		const currentColor = this.circuitBreakerService.getCurrentColor();
+  private async requeuePayment(data: PaymentDto, delay = 1000): Promise<void> {
+    await this.paymentQueue.add('payment', data, { priority: 1, backoff: { type: 'exponential', delay: 1000 } });
+  }
 
-		if (currentColor === CircuitBreakerColor.RED) {
-			return Promise.reject(new Error('Circuit breaker: ' + currentColor));
-		}
+  async process() {
+    const currentColor = await this.circuitBreakerService.getCurrentColor();
 
-		if (currentColor === CircuitBreakerColor.GREEN) {
-			return this.processorService.processPayment(PaymentProcessor.DEFAULT, this.job.data);
-		}
+    if (currentColor === CircuitBreakerColor.RED) {
+      return this.requeuePayment(this.job.data);
+    }
 
-		if (currentColor === CircuitBreakerColor.YELLOW) {
-			return this.processorService.processPayment(PaymentProcessor.FALLBACK, this.job.data);
-		}
-	}
+    if (currentColor === CircuitBreakerColor.GREEN) {
+      return this.processorService.processPayment(PaymentProcessor.DEFAULT, this.job.data);
+    }
+
+    if (currentColor === CircuitBreakerColor.YELLOW) {
+      return this.processorService.processPayment(PaymentProcessor.FALLBACK, this.job.data);
+    }
+  }
 }

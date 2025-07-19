@@ -8,7 +8,7 @@ import { ConfigModule } from '../config/config.module';
 
 @Module({})
 export class PaymentModule {
-	static forProducer(): DynamicModule {
+	static forRoot(): DynamicModule {
 		return {
 			module: PaymentModule,
 			imports: [
@@ -16,24 +16,10 @@ export class PaymentModule {
 					name: 'payment',
 				}),
 				ConfigModule,
-				ProcessorModule.forProducer(),
-				CircuitBreakerModule.forProducer(),
+				ProcessorModule.forRoot(),
+				CircuitBreakerModule.forRoot(),
 			],
 			controllers: [PaymentController],
-		};
-	}
-
-	static forConsumer(): DynamicModule {
-		return {
-			module: PaymentModule,
-			imports: [
-				BullModule.registerQueue({
-					name: 'payment',
-				}),
-				ConfigModule,
-				ProcessorModule.forConsumer(),
-				CircuitBreakerModule.forConsumer(),
-			],
 			providers: [PaymentConsumer],
 		};
 	}
