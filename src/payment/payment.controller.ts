@@ -1,49 +1,40 @@
 import { Body, Controller, Post, Get, Query, Logger } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
 import {
   PaymentDto,
   PaymentSummaryQueryDto,
   PaymentSummaryResponseDto,
 } from './payment.dto';
-import { Queue } from 'bullmq';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '../config/config.service';
 import { ProcessorService } from '../processor/processor.service';
 import { lastValueFrom } from 'rxjs';
+import { InMemoryQueueService } from '../common/in-memory-queue/in-memory-queue.service';
 
 @Controller()
 export class PaymentController {
   private readonly logger = new Logger(PaymentController.name);
 
   constructor(
-    @InjectQueue('payment')
-    private readonly paymentQueue: Queue<PaymentDto, string>,
+    private readonly inMemoryQueueService: InMemoryQueueService<PaymentDto>,
     private readonly processorService: ProcessorService,
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
-  ) { }
+  ) {}
 
   @Post('payments')
   async createPayment(@Body() payment: PaymentDto) {
-    const start = Date.now();
-
-    await this.paymentQueue.add('payment', payment);
-
-    const elapsed = Date.now() - start;
-    if (elapsed > 1) {
-      this.logger.debug(`createPayment: Queuing took ${elapsed}ms`);
-      return { message: 'Payment queued for processing' };
-    }
+    this.inMemoryQueueService.add(payment);
+    return;
   }
 
   @Get('payments-summary')
   async getPaymentSummary(
     @Query() query: PaymentSummaryQueryDto,
   ): Promise<PaymentSummaryResponseDto> {
-    const start = Date.now();
-    const result = await this.processorService.getPaymentSummary(query.from, query.to);
-    const elapsed = Date.now() - start;
-    this.logger.debug(`getPaymentSummary: Processing took ${elapsed}ms`);
+    const result = await this.processorService.getPaymentSummary(
+      query.from,
+      query.to,
+    );
     return result;
   }
 
@@ -81,15 +72,5 @@ export class PaymentController {
           fallbackResponse.status === 'fulfilled' ? 'success' : 'failed',
       },
     };
-  }
-
-  private extractErrorMessage(error: any): string {
-    if (error?.response) {
-      return `HTTP ${error.response.status} - ${error.response.statusText || 'Unknown'} (${error.config?.url || 'unknown URL'})`;
-    }
-    if (error?.code) {
-      return `${error.code}: ${error.message}`;
-    }
-    return error?.message || 'Unknown error';
   }
 }

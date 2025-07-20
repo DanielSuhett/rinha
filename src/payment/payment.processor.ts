@@ -1,47 +1,52 @@
-import { InjectQueue, JOB_REF, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job, Queue } from 'bullmq';
-import { Inject, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { PaymentDto } from './payment.dto';
-import {
-  CircuitBreakerService,
-  CircuitBreakerColor,
-} from '../common/circuit-breaker';
-import { ProcessorService } from '../processor/processor.service';
+import { PaymentService } from './payment.service';
+import { InjectRedis } from '@nestjs-modules/ioredis';
+import { Redis } from 'ioredis';
 
-export enum PaymentProcessor {
-  DEFAULT = 'default',
-  FALLBACK = 'fallback',
-}
-@Processor({
-  name: 'payment',
-})
-export class PaymentConsumer extends WorkerHost {
+@Injectable()
+export class PaymentProcessor implements OnModuleInit, OnModuleDestroy {
+  private readonly queueKey: string = process.env.APP_MODE || 'queue_payment'; // Must match the key in InMemoryQueueService
+  private isProcessing: boolean = false;
+  private readonly pollingIntervalMs = 100;
+  private processingTimeout: NodeJS.Timeout | null = null;
+  private readonly logger = new Logger(PaymentProcessor.name);
+
   constructor(
-    private readonly processorService: ProcessorService,
-    private readonly circuitBreakerService: CircuitBreakerService,
-    @Inject(JOB_REF) private job: Job<PaymentDto>,
-    @InjectQueue('payment') private readonly paymentQueue: Queue,
-  ) {
-    super();
+    private readonly paymentService: PaymentService,
+    @InjectRedis() private readonly redis: Redis,
+  ) { }
+
+  onModuleInit() {
+    this.isProcessing = true;
+    this.startProcessing();
   }
 
-  private async requeuePayment(data: PaymentDto, delay = 1000): Promise<void> {
-    await this.paymentQueue.add('payment', data, { priority: 1, backoff: { type: 'exponential', delay: 1000 } });
+  onModuleDestroy() {
+    this.isProcessing = false;
+    if (this.processingTimeout) {
+      clearTimeout(this.processingTimeout);
+    }
   }
 
-  async process() {
-    const currentColor = await this.circuitBreakerService.getCurrentColor();
-
-    if (currentColor === CircuitBreakerColor.RED) {
-      return this.requeuePayment(this.job.data);
+  private async startProcessing() {
+    if (!this.isProcessing) {
+      return;
     }
 
-    if (currentColor === CircuitBreakerColor.GREEN) {
-      return this.processorService.processPayment(PaymentProcessor.DEFAULT, this.job.data);
-    }
+    try {
+      const serializedPayment = await this.redis.lpop(this.queueKey);
 
-    if (currentColor === CircuitBreakerColor.YELLOW) {
-      return this.processorService.processPayment(PaymentProcessor.FALLBACK, this.job.data);
+      if (serializedPayment) {
+        const payment: PaymentDto = JSON.parse(serializedPayment);
+        this.paymentService.processPayment(payment);
+        this.processingTimeout = setTimeout(() => this.startProcessing(), 0);
+      } else {
+        this.processingTimeout = setTimeout(() => this.startProcessing(), this.pollingIntervalMs);
+      }
+    } catch (error) {
+      this.logger.error(`Error processing payment from queue: ${error.message}`);
+      this.processingTimeout = setTimeout(() => this.startProcessing(), this.pollingIntervalMs + 1000);
     }
   }
 }

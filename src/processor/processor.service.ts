@@ -7,13 +7,12 @@ import { ConfigService } from '../config/config.service';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
 import { CircuitBreakerColor, CircuitBreakerService } from 'src/common/circuit-breaker/circuit-breaker.service';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
+import { InMemoryQueueService } from '../common/in-memory-queue/in-memory-queue.service';
 
 @Injectable()
 export class ProcessorService implements OnModuleInit {
   private readonly PROCESSED_PAYMENTS_PREFIX = 'processed:payments';
-  private readonly BATCH_SIZE = 50;
+  private readonly BATCH_SIZE = 25;
   private readonly BATCH_TIMEOUT = 1000;
 
   private processorPaymentUrl: {
@@ -21,21 +20,16 @@ export class ProcessorService implements OnModuleInit {
     fallback: string;
   };
 
-  private pendingPayments: Array<{
-    processorType: 'default' | 'fallback';
-    amount: number;
-    requestedAt: string;
-    correlationId: string;
-  }> = [];
+  private pendingPayments: Array<{ processorType: 'default' | 'fallback'; amount: number; requestedAt: string; correlationId: string; }> = [];
   private batchTimer: NodeJS.Timeout | null = null;
 
   constructor(
-    @InjectQueue('payment') private readonly paymentQueue: Queue,
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     @InjectRedis() private readonly redis: Redis,
     private readonly logger: Logger,
     private readonly circuitBreakerService: CircuitBreakerService,
+    private readonly inMemoryQueueService: InMemoryQueueService<PaymentDto>,
   ) { }
 
   onModuleInit() {
@@ -62,7 +56,7 @@ export class ProcessorService implements OnModuleInit {
     this.httpService.post(this.processorPaymentUrl[processorType], payment)
       .pipe(
         catchError((error) => {
-          this.requeuePayment(processorType, data);
+          this.requeuePayment(data);
           return EMPTY;
         })
       )
@@ -75,17 +69,21 @@ export class ProcessorService implements OnModuleInit {
         },
         error: () => {
           this.logger.error(`error to signal: ${processorType} error`);
-          this.requeuePayment(processorType, data);
+          this.requeuePayment(data);
           return EMPTY;
         }
       });
   }
 
-  private async requeuePayment(processorType: 'default' | 'fallback', data: PaymentDto, delay = 3000): Promise<void> {
-    await this.paymentQueue.add('payment', data, { priority: 1, backoff: { type: 'exponential', delay: 1000 } });
+  private requeuePayment(data: PaymentDto): void {
+    this.inMemoryQueueService.requeue(data);
   }
 
-  processPayment(processorType: 'default' | 'fallback', data: PaymentDto): void {
+  processPayment(data: PaymentDto): void {
+    this.inMemoryQueueService.add(data);
+  }
+
+  public sendPaymentToProcessor(processorType: 'default' | 'fallback', data: PaymentDto): void {
     const payment = this.newPayment(data);
 
     this.httpService.post(this.processorPaymentUrl[processorType], payment)
@@ -99,7 +97,7 @@ export class ProcessorService implements OnModuleInit {
               }
 
               if (color === CircuitBreakerColor.RED) {
-                this.requeuePayment(processorType, data);
+                this.requeuePayment(data);
                 return EMPTY;
               }
 
@@ -171,6 +169,7 @@ export class ProcessorService implements OnModuleInit {
 
   private async flushBatch(): Promise<void> {
     if (this.pendingPayments.length === 0) {
+      this.logger.debug('No pending payments to flush.');
       return;
     }
 
@@ -182,7 +181,6 @@ export class ProcessorService implements OnModuleInit {
       this.batchTimer = null;
     }
 
-    const start = Date.now();
     try {
       const pipeline = this.redis.pipeline();
 
@@ -198,10 +196,6 @@ export class ProcessorService implements OnModuleInit {
       }
 
       await pipeline.exec();
-      const elapsed = Date.now() - start;
-      if (elapsed > 10) {
-        this.logger.debug(`🛑 Redis write took ${elapsed}ms`);
-      }
     } catch (error) {
       const correlationIds = paymentsToProcess
         .map((p) => p.correlationId)

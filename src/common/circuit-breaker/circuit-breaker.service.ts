@@ -41,30 +41,32 @@ export class CircuitBreakerService {
 
   private async cronToCheckTheHealth() {
     if (this.poolingHealth) {
-      return;
+      return CircuitBreakerColor.RED;
     }
 
     this.poolingHealth = true;
 
-    const healthDefault = await this.health('default', true);
-    const healthFallback = await this.health('fallback', true);
+    try {
+      while (true) {
+        const healthDefault = await this.health('default', true);
+        const healthFallback = await this.health('fallback', true);
 
-    const color = this.defineTheColor({
-      default: healthDefault || this.FAILURE,
-      fallback: healthFallback || this.FAILURE,
-    });
+        const color = this.defineTheColor({
+          default: healthDefault || this.FAILURE,
+          fallback: healthFallback || this.FAILURE,
+        });
 
-    if (color === CircuitBreakerColor.RED) {
-      this.logger.debug(`pooling health`);
-      await new Promise(resolve => setTimeout(resolve, 5000));
+        if (color !== CircuitBreakerColor.RED) {
+          this.logger.debug(`pooling health done`);
+          return color;
+        }
+
+        this.logger.debug(`pooling health`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    } finally {
       this.poolingHealth = false;
-      return this.cronToCheckTheHealth();
     }
-
-    this.logger.debug(`pooling health done`);
-
-    this.poolingHealth = false;
-    return color;
   }
 
   private async color(color: CircuitBreakerColor) {
@@ -72,9 +74,14 @@ export class CircuitBreakerService {
     await this.redis.hset(this.CIRCUIT_BREAKER, { color });
   }
 
+  private openedHealth = false;
 
   private async health(processor: 'default' | 'fallback', cameFromCron = false): Promise<ProcessorHealth | null> {
     try {
+      if (this.openedHealth) {
+        return { minResponseTime: 0, failing: true };
+      }
+
       const response = await lastValueFrom(this.httpService.get<ProcessorHealth>(this.processor[processor]).pipe(timeout(5000)));
 
       const minResponseTime = response.data.minResponseTime;
@@ -121,46 +128,33 @@ export class CircuitBreakerService {
 
     // TODO: refactor to use containers queues in memory to not share state to retry.
 
-    if (process.env.APP_MODE !== 'CONSUMER') {
-      return CircuitBreakerColor.RED;
-    }
-
     const isDefault = processor === 'default';
 
-    const health = await this.health(isDefault ? 'fallback' : 'default');
+    this.openedHealth = true;
+    const otherProcessor = isDefault ? 'fallback' : 'default';
+    const health = await this.health(otherProcessor);
+    this.openedHealth = false;
 
+    // Case 1: The other processor is healthy.
     if (health && !health.failing) {
-      const color = isDefault ? CircuitBreakerColor.YELLOW : CircuitBreakerColor.GREEN;
-      await this.color(color);
-      return color;
+      // If default failed, we go to YELLOW. If fallback failed, we go to GREEN.
+      const newColor = isDefault ? CircuitBreakerColor.YELLOW : CircuitBreakerColor.GREEN;
+      await this.color(newColor);
+
+      return newColor;
     }
 
-    if (!health || health.failing) {
-      await this.color(CircuitBreakerColor.RED);
-
-      const color = await this.cronToCheckTheHealth();
-
-      if (color && color !== CircuitBreakerColor.RED) {
-        this.logger.debug(`fast recovery with pooling health done`);
-        await this.color(color);
-        return color;
+    // Case 2: The other processor is also failing (or health check failed).
+    // This means both are down. Go to RED and start cron job to recover.
+    await this.color(CircuitBreakerColor.RED);
+    this.cronToCheckTheHealth().then((recoveredColor) => {
+      if (recoveredColor && recoveredColor !== CircuitBreakerColor.RED) {
+        this.color(recoveredColor);
       }
-
-      await this.color(CircuitBreakerColor.RED);
-      return CircuitBreakerColor.RED;
-    }
-
-
-    const color = this.defineTheColor(isDefault ? {
-      default: this.FAILURE,
-      fallback: health,
-    } : {
-      default: health,
-      fallback: this.FAILURE,
     });
 
-    await this.color(color);
-
-    return color;
+    // Stay in RED state.
+    await this.color(CircuitBreakerColor.RED);
+    return CircuitBreakerColor.RED;
   }
 }
