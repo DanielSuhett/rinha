@@ -6,7 +6,7 @@ import { Redis } from 'ioredis';
 
 @Injectable()
 export class PaymentProcessor implements OnModuleInit, OnModuleDestroy {
-  private readonly queueKey: string = process.env.APP_MODE || 'queue_payment'; // Must match the key in InMemoryQueueService
+  private readonly queueKey: string = process.env.APP_MODE || 'queue_payment';
   private isProcessing: boolean = false;
   private readonly pollingIntervalMs = 100;
   private processingTimeout: NodeJS.Timeout | null = null;

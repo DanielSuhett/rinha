@@ -12,12 +12,14 @@ export class InMemoryQueueService<T> {
     @InjectRedis() private readonly redis: Redis,
   ) { }
 
-  async add(item: T) {
+  add(item: T) {
     try {
       const start = performance.now();
       const serializedItem = JSON.stringify(item);
 
-      await this.redis.rpush(this.queueKey, serializedItem);
+      this.redis.rpush(this.queueKey, serializedItem).catch(error => {
+        this.logger.error(`Error adding item to Redis queue: ${error.message}`);
+      });
       const end = performance.now();
       (end - start) > 5 && this.logger.debug(`add to the queue took ${end - start}ms`);
     } catch (error) {
@@ -25,11 +27,13 @@ export class InMemoryQueueService<T> {
     }
   }
 
-  async requeue(item: T) {
+  requeue(item: T) {
     try {
       const start = performance.now();
       const serializedItem = JSON.stringify(item);
-      await this.redis.lpush(this.queueKey, serializedItem);
+      this.redis.lpush(this.queueKey, serializedItem).catch(error => {
+        this.logger.error(`Error requeueing item to Redis queue: ${error.message}`);
+      });
       const end = performance.now();
       (end - start) > 5 && this.logger.debug(`requeue to the queue took ${end - start}ms`);
     } catch (error) {

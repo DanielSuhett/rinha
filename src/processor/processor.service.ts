@@ -62,7 +62,7 @@ export class ProcessorService implements OnModuleInit {
       )
       .subscribe({
         next: (response) => {
-          if (response.status === HttpStatus.OK) {
+          if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
             this.logger.debug('recovered from signal');
             this.persistProcessedPaymentAsync(processorType, payment.amount, payment.requestedAt, payment.correlationId);
           }
@@ -109,7 +109,7 @@ export class ProcessorService implements OnModuleInit {
       )
       .subscribe({
         next: (response) => {
-          if (response.status === HttpStatus.OK) {
+          if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
             this.persistProcessedPaymentAsync(
               processorType,
               payment.amount,
