@@ -9,7 +9,6 @@ export class PaymentProcessor implements OnModuleInit, OnModuleDestroy {
   private readonly queueKey: string = process.env.APP_MODE || 'queue_payment';
   private isProcessing: boolean = false;
   private readonly pollingIntervalMs = 100;
-  private processingTimeout: NodeJS.Timeout | null = null;
   private readonly logger = new Logger(PaymentProcessor.name);
 
   constructor(
@@ -24,9 +23,6 @@ export class PaymentProcessor implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy() {
     this.isProcessing = false;
-    if (this.processingTimeout) {
-      clearTimeout(this.processingTimeout);
-    }
   }
 
   private async startProcessing() {
@@ -40,13 +36,13 @@ export class PaymentProcessor implements OnModuleInit, OnModuleDestroy {
       if (serializedPayment) {
         const payment: PaymentDto = JSON.parse(serializedPayment);
         this.paymentService.processPayment(payment);
-        this.processingTimeout = setTimeout(() => this.startProcessing(), 0);
+        setImmediate(() => this.startProcessing());
       } else {
-        this.processingTimeout = setTimeout(() => this.startProcessing(), this.pollingIntervalMs);
+        setImmediate(() => this.startProcessing());
       }
     } catch (error) {
       this.logger.error(`Error processing payment from queue: ${error.message}`);
-      this.processingTimeout = setTimeout(() => this.startProcessing(), this.pollingIntervalMs + 1000);
+      setTimeout(() => this.startProcessing(), this.pollingIntervalMs);
     }
   }
 }

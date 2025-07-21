@@ -12,16 +12,11 @@ import { InMemoryQueueService } from '../common/in-memory-queue/in-memory-queue.
 @Injectable()
 export class ProcessorService implements OnModuleInit {
   private readonly PROCESSED_PAYMENTS_PREFIX = 'processed:payments';
-  private readonly BATCH_SIZE = 25;
-  private readonly BATCH_TIMEOUT = 1000;
 
   private processorPaymentUrl: {
     default: string;
     fallback: string;
   };
-
-  private pendingPayments: Array<{ processorType: 'default' | 'fallback'; amount: number; requestedAt: string; correlationId: string; }> = [];
-  private batchTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly httpService: HttpService,
@@ -53,10 +48,13 @@ export class ProcessorService implements OnModuleInit {
 
   private retryAfterSignal(processorType: 'default' | 'fallback', data: PaymentDto): void {
     const payment = this.newPayment(data);
-    this.httpService.post(this.processorPaymentUrl[processorType], payment)
+    this.httpService.post(this.processorPaymentUrl[processorType], payment, {
+      headers: { 'Connection': 'keep-alive' },
+      timeout: 3000,
+    })
       .pipe(
         catchError((error) => {
-          this.requeuePayment(data);
+          this.requeuePayment(data)
           return EMPTY;
         })
       )
@@ -64,29 +62,27 @@ export class ProcessorService implements OnModuleInit {
         next: (response) => {
           if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
             this.logger.debug('recovered from signal');
-            this.persistProcessedPaymentAsync(processorType, payment.amount, payment.requestedAt, payment.correlationId);
+            this.persistProcessedPayment(processorType, payment.amount, payment.correlationId, payment.requestedAt)
+              .catch(e => this.logger.error(`Failed to persist: ${e.message}`));
           }
         },
         error: () => {
           this.logger.error(`error to signal: ${processorType} error`);
-          this.requeuePayment(data);
-          return EMPTY;
+          this.requeuePayment(data)
         }
       });
   }
 
   private requeuePayment(data: PaymentDto): void {
-    this.inMemoryQueueService.requeue(data);
-  }
-
-  processPayment(data: PaymentDto): void {
-    this.inMemoryQueueService.add(data);
+    return this.inMemoryQueueService.requeue(data);
   }
 
   public sendPaymentToProcessor(processorType: 'default' | 'fallback', data: PaymentDto): void {
     const payment = this.newPayment(data);
 
-    this.httpService.post(this.processorPaymentUrl[processorType], payment)
+    this.httpService.post(this.processorPaymentUrl[processorType], payment, {
+      timeout: 3000,
+    })
       .pipe(
         catchError((error) => {
           this.circuitBreakerService.signal(processorType)
@@ -97,7 +93,7 @@ export class ProcessorService implements OnModuleInit {
               }
 
               if (color === CircuitBreakerColor.RED) {
-                this.requeuePayment(data);
+                this.requeuePayment(data)
                 return EMPTY;
               }
 
@@ -110,12 +106,12 @@ export class ProcessorService implements OnModuleInit {
       .subscribe({
         next: (response) => {
           if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
-            this.persistProcessedPaymentAsync(
+            this.persistProcessedPayment(
               processorType,
               payment.amount,
-              payment.requestedAt,
               payment.correlationId,
-            );
+              payment.requestedAt
+            ).catch(e => this.logger.error(`Failed to persist: ${e.message}`));
           }
         },
         error: () => {
@@ -137,74 +133,26 @@ export class ProcessorService implements OnModuleInit {
     return error?.message || 'Unknown error';
   }
 
-  private persistProcessedPaymentAsync(
+  private async persistProcessedPayment(
     processorType: 'default' | 'fallback',
     amount: number,
-    requestedAt: string,
     correlationId: string,
-  ) {
-    this.pendingPayments.push({
-      processorType,
-      amount,
-      requestedAt,
-      correlationId,
-    });
+    requestedAt: string,
+  ): Promise<void> {
+    const timestamp = new Date(requestedAt).getTime();
+    const pipeline = this.redis.pipeline();
 
-    if (this.pendingPayments.length >= this.BATCH_SIZE) {
-      this.flushBatch().catch((e) => {
-        this.logger.error(
-          `Error flushing batch: ${this.extractErrorMessage(e)}`,
-        );
-      });
-    } else if (!this.batchTimer) {
-      this.batchTimer = setTimeout(() => {
-        this.flushBatch().catch((e) => {
-          this.logger.error(
-            `Error flushing batch: ${this.extractErrorMessage(e)}`,
-          );
-        });
-      }, this.BATCH_TIMEOUT);
-    }
+    const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:timeline`;
+    const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:stats`;
+
+    // Atomic operations - all succeed or all fail
+    pipeline.zadd(timelineKey, 'NX', timestamp, `${amount}:${correlationId}`);
+    pipeline.hincrby(statsKey, 'count', 1);
+    pipeline.hincrbyfloat(statsKey, 'total', amount);
+
+    await pipeline.exec();
   }
 
-  private async flushBatch(): Promise<void> {
-    if (this.pendingPayments.length === 0) {
-      this.logger.debug('No pending payments to flush.');
-      return;
-    }
-
-    const paymentsToProcess = [...this.pendingPayments];
-    this.pendingPayments = [];
-
-    if (this.batchTimer) {
-      clearTimeout(this.batchTimer);
-      this.batchTimer = null;
-    }
-
-    try {
-      const pipeline = this.redis.pipeline();
-
-      for (const payment of paymentsToProcess) {
-        const timestamp = new Date(payment.requestedAt).getTime();
-        const timelineKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${payment.processorType}:timeline`;
-        const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${payment.processorType}:stats`;
-
-        pipeline.zadd(timelineKey, timestamp, `${payment.amount}:${payment.correlationId}`);
-
-        pipeline.hincrby(statsKey, 'count', 1);
-        pipeline.hincrbyfloat(statsKey, 'total', payment.amount);
-      }
-
-      await pipeline.exec();
-    } catch (error) {
-      const correlationIds = paymentsToProcess
-        .map((p) => p.correlationId)
-        .join(', ');
-      this.logger.error(
-        `Failed to persist payment batch [${correlationIds}]: ${this.extractErrorMessage(error)}`,
-      );
-    }
-  }
 
   async getPaymentRecords(
     from?: string,
@@ -355,7 +303,7 @@ export class ProcessorService implements OnModuleInit {
 
         return {
           totalRequests: parseInt(countStr || '0', 10),
-          totalAmount: parseFloat(totalStr || '0'),
+          totalAmount: Math.round(parseFloat(totalStr || '0') * 100) / 100,
         };
       }
 
@@ -385,7 +333,7 @@ export class ProcessorService implements OnModuleInit {
 
       return {
         totalRequests,
-        totalAmount,
+        totalAmount: Math.round(totalAmount * 100) / 100,
       };
     } catch (error) {
       const errorMessage = this.extractErrorMessage(error);
@@ -396,11 +344,4 @@ export class ProcessorService implements OnModuleInit {
     }
   }
 
-  onDestroy(): void {
-    if (this.batchTimer) {
-      clearTimeout(this.batchTimer);
-      this.batchTimer = null;
-    }
-    this.flushBatch();
-  }
 }

@@ -14,7 +14,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.15"
+          cpus: "0.20"
           memory: "55MB"
 
   api1:
@@ -150,7 +150,7 @@ services:
   redis:
     image: redis:7.2-alpine
     container_name: rinha-redis
-    command: redis-server --save "" --appendonly no --maxclients 20000
+    command: redis-server --save "" --appendonly no --maxmemory 150mb --maxmemory-policy allkeys-lru --tcp-keepalive 60 --timeout 0 --tcp-backlog 511 --databases 1 --maxclients 10000 --hz 100 --rdbcompression no --rdbchecksum no
     networks:
       - backend
       - payment-processor
@@ -164,7 +164,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.35"
+          cpus: "0.30"
           memory: "150MB"
 
 networks:

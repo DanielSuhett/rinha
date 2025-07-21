@@ -19,11 +19,11 @@ export class PaymentController {
     private readonly processorService: ProcessorService,
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   @Post('payments')
   async createPayment(@Body() payment: PaymentDto) {
-    this.inMemoryQueueService.add(payment);
+    this.inMemoryQueueService.add(payment)
     return;
   }
 

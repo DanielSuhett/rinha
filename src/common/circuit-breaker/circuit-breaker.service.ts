@@ -29,7 +29,7 @@ export class CircuitBreakerService {
   private readonly logger = new Logger(CircuitBreakerService.name);
   private cachedColor: CircuitBreakerColor = CircuitBreakerColor.GREEN;
   private lastColorCheck = 0;
-  private readonly COLOR_CHECK_DEBOUNCE = 100;
+  private readonly COLOR_CHECK_DEBOUNCE = 1000;
   private openedHealth = false;
   private poolingHealth = false;
 
@@ -54,16 +54,18 @@ export class CircuitBreakerService {
     this.openedHealth = false
 
     try {
+      let cycle = 0
+      this.logger.debug(`--- start pooling ---`);
       while (true) {
-        const new_color = await this.getCurrentColor();
+        const newColor = await this.getCurrentColor();
 
-        if (new_color !== CircuitBreakerColor.RED) {
+        if (newColor !== CircuitBreakerColor.RED) {
           this.logger.debug(`pooling health done by fast finding color`);
-          return new_color;
+          return newColor;
         }
 
-        const healthDefault = await this.health('default', true);
-        const healthFallback = await this.health('fallback', true);
+        const healthDefault = await this.health('default');
+        const healthFallback = await this.health('fallback');
 
         const color = this.defineTheColor({
           default: healthDefault || this.FAILURE,
@@ -71,12 +73,13 @@ export class CircuitBreakerService {
         });
 
         if (color !== CircuitBreakerColor.RED) {
-          this.logger.debug(`pooling health done`);
+          this.logger.debug(`--- stop pooling ---`);
           return color;
         }
 
-        this.logger.debug(`pooling health`);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        cycle += 1
+        this.logger.debug(`pooling health cycle: ${cycle}`);
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
     } finally {
       this.poolingHealth = false;
@@ -89,20 +92,29 @@ export class CircuitBreakerService {
     }
     this.logger.debug(`[SWAP] color: ${color}`);
 
+    const start = performance.now();
     this.cachedColor = color;
     await this.redis.set(this.CIRCUIT_BREAKER, color);
     this.lastColorCheck = Date.now();
+
+
+    const end = performance.now();
+
+    if (end - start > 10) {
+      this.logger.debug(`set color took ${end - start}ms`);
+    }
   }
 
 
-  private async health(processor: 'default' | 'fallback', cameFromCron = false): Promise<ProcessorHealth | null> {
-    const start = performance.now();
+  private async health(processor: 'default' | 'fallback'): Promise<ProcessorHealth | null> {
     try {
       if (this.openedHealth) {
         return { minResponseTime: 0, failing: true };
       }
 
-      const response = await lastValueFrom(this.httpService.get<ProcessorHealth>(this.processor[processor]).pipe(timeout(500)));
+      const response = await lastValueFrom(this.httpService.get<ProcessorHealth>(this.processor[processor], {
+        timeout: 500,
+      }));
 
       const minResponseTime = response.data.minResponseTime;
       const failing = response.data.failing;
@@ -114,11 +126,6 @@ export class CircuitBreakerService {
         return { minResponseTime: 0, failing: false };
       }
       return { minResponseTime: 0, failing: true };
-    } finally {
-      const end = performance.now();
-      if (end - start > 10) {
-        this.logger.debug(`health check for ${processor} took ${end - start}ms`);
-      }
     }
   }
 
@@ -133,7 +140,7 @@ export class CircuitBreakerService {
       return CircuitBreakerColor.YELLOW;
     }
 
-    if (!processors.default.failing && !processors.fallback.failing && diff >= 1000) {
+    if (!processors.default.failing && !processors.fallback.failing && diff >= 5000) {
       return CircuitBreakerColor.YELLOW;
     }
 
@@ -147,9 +154,16 @@ export class CircuitBreakerService {
       return this.cachedColor;
     }
 
+    const start = performance.now();
     const color = await this.redis.get(this.CIRCUIT_BREAKER);
     this.cachedColor = color as CircuitBreakerColor || CircuitBreakerColor.GREEN;
     this.lastColorCheck = now;
+
+    const end = performance.now();
+
+    if (end - start > 10) {
+      this.logger.debug(`getCurrentColor took ${end - start}ms`);
+    }
 
     return this.cachedColor;
   }

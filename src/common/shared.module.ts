@@ -26,6 +26,15 @@ export class SharedModule {
               type: 'single',
               url: `redis://${redisConfig.host}:${redisConfig.port}`,
               keyPrefix: process.env.APP_MODE === 'PRODUCER' ? 'prod:' : 'cons:',
+              options: {
+                maxRetriesPerRequest: 1,
+                retryDelayOnFailover: 10,
+                enableReadyCheck: false,
+                maxLoadingTimeout: 1000,
+                lazyConnect: true,
+                family: 4,
+                db: 0,
+              },
             };
           },
           inject: [ConfigService],

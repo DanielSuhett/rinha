@@ -8,29 +8,18 @@ import { SharedModule } from './common/shared.module';
 
 @Module({})
 export class AppModule {
-	static forRoot(): DynamicModule {
-		const modules = [
-			ConfigModule,
-			SharedModule.forRoot(),
-			BullModule.forRootAsync({
-				imports: [ConfigModule],
-				inject: [ConfigService],
-				useFactory: (configService: ConfigService) => ({
-					connection: {
-						host: configService.getRedisHost(),
-						port: configService.getRedisPort(),
-					},
-				}),
-			}),
-			HealthModule,
-			PaymentModule.forRoot(),
-		];
+  static forRoot(): DynamicModule {
+    const modules = [
+      ConfigModule,
+      SharedModule.forRoot(),
+      PaymentModule.forRoot(),
+    ];
 
 
 
-		return {
-			module: AppModule,
-			imports: modules,
-		};
-	}
+    return {
+      module: AppModule,
+      imports: modules,
+    };
+  }
 }
