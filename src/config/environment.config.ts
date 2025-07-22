@@ -14,10 +14,9 @@ const environmentSchema = z.object({
   POOLING_INTERVAL: z.number().default(1000),
 
   // circuit breaker fine tuning params
-  HEALTH_TIMEOUT: z.number().default(200),
+  HEALTH_TIMEOUT: z.number().default(500),
   HEALTH_INTERVAL: z.number().default(3000),
-  COLOR_DEBOUNCE: z.number().default(1000),
-  LATENCY_DIFF_TO_USE_FALLBACK: z.number().default(5000),
+  LATENCY_DIFF_TO_USE_FALLBACK: z.number().default(1000),
 });
 
 

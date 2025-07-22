@@ -12,10 +12,10 @@ export class PaymentController {
   constructor(
     private readonly inMemoryQueueService: InMemoryQueueService<PaymentDto>,
     private readonly paymentService: PaymentService,
-  ) {}
+  ) { }
 
   @Post('payments')
-  async createPayment(@Body() payment: PaymentDto) {
+  createPayment(@Body() payment: PaymentDto) {
     this.inMemoryQueueService.add(payment)
     return;
   }

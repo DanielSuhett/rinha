@@ -16,38 +16,28 @@ export class PaymentService {
     private readonly paymentRepository: PaymentRepository
   ) { }
 
-  async processPayment(payment: string) {
-    const currentColor = await this.circuitBreakerService.getCurrentColor();
+  processPayment(payment: string) {
+    const currentColor = this.circuitBreakerService.getCurrentColor();
 
-    try {
-      if (currentColor === CircuitBreakerColor.RED) {
-        return this.inMemoryQueueService.requeue(payment);
-      }
-
-      if (currentColor === CircuitBreakerColor.GREEN) {
-        return this.paymentRepository.send(
-          Processor.DEFAULT,
-          payment,
-        );
-      }
-
-      if (currentColor === CircuitBreakerColor.YELLOW) {
-        return this.paymentRepository.send(
-          Processor.FALLBACK,
-          payment,
-        );
-      }
-    } catch (error) {
-      if (error.cause === Processor.DEFAULT) {
-        this.circuitBreakerService.signal(Processor.DEFAULT);
-      }
-
-      if (error.cause === Processor.FALLBACK) {
-        this.circuitBreakerService.signal(Processor.FALLBACK);
-      }
-
-      this.inMemoryQueueService.requeue(payment);
+    if (currentColor === CircuitBreakerColor.RED) {
+      return this.inMemoryQueueService.requeue(payment);
     }
+
+    if (currentColor === CircuitBreakerColor.GREEN) {
+      return this.paymentRepository.send(
+        Processor.DEFAULT,
+        payment,
+      );
+    }
+
+    if (currentColor === CircuitBreakerColor.YELLOW) {
+      return this.paymentRepository.send(
+        Processor.FALLBACK,
+        payment,
+      );
+    }
+
+    return;
   }
 
   async getPaymentSummary(
