@@ -1,8 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '../../config/config.service';
-import { lastValueFrom } from 'rxjs';
 import { Processor } from 'src/payment/payment.dto';
+import { HttpClientService } from '../http/http-client.service';
 
 export enum CircuitBreakerColor {
   GREEN = 'green',
@@ -35,7 +34,7 @@ export class CircuitBreakerService {
 
   constructor(
     private readonly configService: ConfigService,
-    private readonly httpService: HttpService,
+    private readonly httpClientService: HttpClientService,
   ) {
     this.processor = {
       default: `${this.configService.getProcessorDefaultUrl()}/payments/service-health`,
@@ -104,9 +103,9 @@ export class CircuitBreakerService {
         return { minResponseTime: 0, failing: true };
       }
 
-      const response = await lastValueFrom(this.httpService.get<ProcessorHealth>(this.processor[processor], {
+      const response = await this.httpClientService.get<ProcessorHealth>(this.processor[processor], {
         timeout: this.HEALTH_TIMEOUT,
-      }));
+      });
 
       const minResponseTime = response.data.minResponseTime;
       const failing = response.data.failing;

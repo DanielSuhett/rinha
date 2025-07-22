@@ -1,13 +1,11 @@
 import { HttpStatus, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PaymentDto, Processor } from '../payment/payment.dto';
-import { HttpService } from '@nestjs/axios';
-import { catchError } from 'rxjs';
-import { EMPTY } from 'rxjs';
 import { ConfigService } from '../config/config.service';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
 import { CircuitBreakerColor, CircuitBreakerService } from 'src/common/circuit-breaker/circuit-breaker.service';
 import { InMemoryQueueService } from '../common/in-memory-queue/in-memory-queue.service';
+import { HttpClientService } from '../common/http/http-client.service';
 
 @Injectable()
 export class PaymentRepository implements OnModuleInit {
@@ -19,7 +17,7 @@ export class PaymentRepository implements OnModuleInit {
   };
 
   constructor(
-    private readonly httpService: HttpService,
+    private readonly httpClientService: HttpClientService,
     private readonly configService: ConfigService,
     @InjectRedis() private readonly redis: Redis,
     private readonly circuitBreakerService: CircuitBreakerService,
@@ -69,48 +67,38 @@ export class PaymentRepository implements OnModuleInit {
     await pipeline.exec();
   }
 
-  public send(processorType: Processor, data: string): void {
+  public async send(processorType: Processor, data: string): Promise<void> {
     const payment = this.newPaymentJSON(data);
-    this.httpService.post(this.processorPaymentUrl[processorType], payment, {
-      timeout: 3000,
-    })
-      .pipe(
-        catchError((_) => {
-          this.circuitBreakerService.signal(processorType)
-            .then((color) => {
-              if (!color) {
-                return EMPTY;
-              }
+    try {
+      const response = await this.httpClientService.post(
+        this.processorPaymentUrl[processorType], 
+        payment,
+        { timeout: 3000 }
+      );
+      
+      if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
+        const { amount, correlationId, requestedAt } = payment;
+        await this.save(
+          processorType,
+          amount,
+          correlationId,
+          requestedAt
+        ).catch(e => console.error(e));
+      }
+    } catch (error) {
+      const color = await this.circuitBreakerService.signal(processorType);
+      
+      if (!color) {
+        return;
+      }
 
-              if (color === CircuitBreakerColor.RED) {
-                this.inMemoryQueueService.requeue(data)
-                return EMPTY;
-              }
+      if (color === CircuitBreakerColor.RED) {
+        this.inMemoryQueueService.requeue(data);
+        return;
+      }
 
-              this.send(processorType, data);
-            })
-
-          return EMPTY;
-        }),
-      )
-      .subscribe({
-        next: (response) => {
-          if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
-            const { amount, correlationId, requestedAt } = payment;
-            this.save(
-              processorType,
-              amount,
-              correlationId,
-              requestedAt
-            ).catch(e => console.error(e));
-          }
-        },
-        error: (_) => {
-          return EMPTY;
-        }
-      });
-
-    return;
+      await this.send(processorType, data);
+    }
   }
 
   public async find(

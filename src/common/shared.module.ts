@@ -1,18 +1,12 @@
 import { Module } from '@nestjs/common';
-import { HttpModule } from '@nestjs/axios';
 import { RedisModule } from '@nestjs-modules/ioredis';
 import { ConfigModule } from '../config/config.module';
 import { ConfigService } from '../config/config.service';
+import { HttpClientModule } from './http/http-client.module';
 
 @Module({
   imports: [
-    HttpModule.registerAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: () => ({
-        timeout: 10000,
-      }),
-    }),
+    HttpClientModule,
     RedisModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => {
@@ -35,6 +29,6 @@ import { ConfigService } from '../config/config.service';
       inject: [ConfigService],
     }),
   ],
-  exports: [HttpModule, RedisModule],
+  exports: [HttpClientModule, RedisModule],
 })
 export class SharedModule {}

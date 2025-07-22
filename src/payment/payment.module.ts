@@ -1,26 +1,19 @@
 import { Module } from '@nestjs/common';
-import { PaymentController } from './payment.controller';
 import { CircuitBreakerModule } from '../common/circuit-breaker';
 import { ConfigModule } from '../config/config.module';
 import { InMemoryQueueModule } from '../common/in-memory-queue/in-memory-queue.module';
 import { PaymentService } from './payment.service';
 import { PaymentRepository } from './payment.repository';
-import { HttpModule } from '@nestjs/axios';
 import { RedisModule } from '@nestjs-modules/ioredis';
 import { ConfigService } from '../config/config.service';
+import { HttpClientModule } from '../common/http/http-client.module';
 
 @Module({
 	imports: [
 		ConfigModule,
 		CircuitBreakerModule,
 		InMemoryQueueModule,
-		HttpModule.registerAsync({
-			imports: [ConfigModule],
-			inject: [ConfigService],
-			useFactory: () => ({
-				timeout: 10000,
-			}),
-		}),
+		HttpClientModule,
 		RedisModule.forRootAsync({
 			imports: [ConfigModule],
 			useFactory: (configService: ConfigService) => {
@@ -43,7 +36,7 @@ import { ConfigService } from '../config/config.service';
 			inject: [ConfigService],
 		}),
 	],
-	controllers: [PaymentController],
+	controllers: [],
 	providers: [PaymentService, PaymentRepository],
 	exports: [PaymentService],
 })
