@@ -1,25 +1,15 @@
-import { Module, DynamicModule } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { PaymentModule } from './payment/payment.module';
-import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule } from './config/config.module';
-import { ConfigService } from './config/config.service';
-import { HealthModule } from './health/health.module';
 import { SharedModule } from './common/shared.module';
+import { PoolingModule } from './common/pooling/pooling.module';
 
-@Module({})
-export class AppModule {
-  static forRoot(): DynamicModule {
-    const modules = [
-      ConfigModule,
-      SharedModule.forRoot(),
-      PaymentModule.forRoot(),
-    ];
-
-
-
-    return {
-      module: AppModule,
-      imports: modules,
-    };
-  }
-}
+@Module({
+  imports: [
+    ConfigModule,
+    SharedModule,
+    PaymentModule,
+    PoolingModule,
+  ],
+})
+export class AppModule {}

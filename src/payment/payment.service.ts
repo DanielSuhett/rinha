@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { PaymentDto, PaymentSummaryResponseDto } from './payment.dto';
-import { ProcessorService } from '../processor/processor.service';
+import { PaymentDto, PaymentSummaryResponseDto, Processor } from './payment.dto';
+import { PaymentRepository } from './payment.repository';
+
 import {
   CircuitBreakerService,
   CircuitBreakerColor,
@@ -10,12 +11,12 @@ import { InMemoryQueueService } from '../common/in-memory-queue/in-memory-queue.
 @Injectable()
 export class PaymentService {
   constructor(
-    private readonly processorService: ProcessorService,
     private readonly circuitBreakerService: CircuitBreakerService,
     private readonly inMemoryQueueService: InMemoryQueueService<PaymentDto>,
+    private readonly paymentRepository: PaymentRepository
   ) { }
 
-  async processPayment(payment: PaymentDto) {
+  async processPayment(payment: string) {
     const currentColor = await this.circuitBreakerService.getCurrentColor();
 
     try {
@@ -24,25 +25,25 @@ export class PaymentService {
       }
 
       if (currentColor === CircuitBreakerColor.GREEN) {
-        return this.processorService.sendPaymentToProcessor(
-          'default',
+        return this.paymentRepository.send(
+          Processor.DEFAULT,
           payment,
         );
       }
 
       if (currentColor === CircuitBreakerColor.YELLOW) {
-        return this.processorService.sendPaymentToProcessor(
-          'fallback',
+        return this.paymentRepository.send(
+          Processor.FALLBACK,
           payment,
         );
       }
     } catch (error) {
-      if (error.cause === 'default') {
-        this.circuitBreakerService.signal('default');
+      if (error.cause === Processor.DEFAULT) {
+        this.circuitBreakerService.signal(Processor.DEFAULT);
       }
 
-      if (error.cause === 'fallback') {
-        this.circuitBreakerService.signal('fallback');
+      if (error.cause === Processor.FALLBACK) {
+        this.circuitBreakerService.signal(Processor.FALLBACK);
       }
 
       this.inMemoryQueueService.requeue(payment);
@@ -53,9 +54,27 @@ export class PaymentService {
     from?: string,
     to?: string,
   ): Promise<PaymentSummaryResponseDto> {
-    if (!this.processorService) {
-      throw new Error('ProcessorService not available in producer mode');
+    try {
+      const fromDate = from ? new Date(from) : undefined;
+      const toDate = to ? new Date(to) : undefined;
+
+      const fromTime = fromDate?.getTime() ?? undefined;
+      const toTime = toDate?.getTime() ?? undefined;
+
+
+      const [defaultStats, fallbackStats] = await Promise.all([
+        this.paymentRepository.find(Processor.DEFAULT, fromTime, toTime),
+        this.paymentRepository.find(Processor.FALLBACK, fromTime, toTime),
+      ]);
+
+      const result = {
+        default: defaultStats,
+        fallback: fallbackStats,
+      };
+
+      return result;
+    } catch (error) {
+      throw error;
     }
-    return await this.processorService.getPaymentSummary(from, to);
   }
 }

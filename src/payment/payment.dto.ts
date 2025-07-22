@@ -1,5 +1,11 @@
 import { IsNotEmpty, IsNumber, IsUUID, IsDateString, IsOptional } from 'class-validator';
 
+
+export enum Processor {
+  DEFAULT = 'default',
+  FALLBACK = 'fallback',
+}
+
 export class PaymentDto {
   @IsNotEmpty()
   @IsUUID()

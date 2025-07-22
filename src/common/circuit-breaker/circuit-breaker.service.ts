@@ -6,6 +6,7 @@ import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
 import { timeout } from 'rxjs/operators';
 import { performance } from 'perf_hooks';
+import { Processor } from 'src/payment/payment.dto';
 
 export enum CircuitBreakerColor {
   GREEN = 'green',
@@ -26,10 +27,16 @@ export class CircuitBreakerService {
   };
   private readonly CIRCUIT_BREAKER = 'circuit-breaker-color';
   private readonly FAILURE = { failing: true, minResponseTime: 0 };
-  private readonly logger = new Logger(CircuitBreakerService.name);
+
   private cachedColor: CircuitBreakerColor = CircuitBreakerColor.GREEN;
+
   private lastColorCheck = 0;
-  private readonly COLOR_CHECK_DEBOUNCE = 1000;
+
+  private readonly COLOR_DEBOUNCE: number;
+  private readonly HEALTH_INTERVAL: number;
+  private readonly HEALTH_TIMEOUT: number;
+  private readonly LATENCY_DIFF_TO_USE_FALLBACK: number;
+
   private openedHealth = false;
   private poolingHealth = false;
 
@@ -42,6 +49,18 @@ export class CircuitBreakerService {
       default: `${this.configService.getProcessorDefaultUrl()}/payments/service-health`,
       fallback: `${this.configService.getProcessorFallbackUrl()}/payments/service-health`,
     };
+
+    const {
+      colorDebounce,
+      healthInterval,
+      healthTimeout,
+      latencyDiffToUseFallback,
+    } = this.configService.getConstraints()
+
+    this.COLOR_DEBOUNCE = colorDebounce;
+    this.HEALTH_INTERVAL = healthInterval;
+    this.HEALTH_TIMEOUT = healthTimeout;
+    this.LATENCY_DIFF_TO_USE_FALLBACK = latencyDiffToUseFallback;
   }
 
 
@@ -54,18 +73,15 @@ export class CircuitBreakerService {
     this.openedHealth = false
 
     try {
-      let cycle = 0
-      this.logger.debug(`--- start pooling ---`);
       while (true) {
         const newColor = await this.getCurrentColor();
 
         if (newColor !== CircuitBreakerColor.RED) {
-          this.logger.debug(`pooling health done by fast finding color`);
           return newColor;
         }
 
-        const healthDefault = await this.health('default');
-        const healthFallback = await this.health('fallback');
+        const healthDefault = await this.health(Processor.DEFAULT);
+        const healthFallback = await this.health(Processor.FALLBACK);
 
         const color = this.defineTheColor({
           default: healthDefault || this.FAILURE,
@@ -73,13 +89,10 @@ export class CircuitBreakerService {
         });
 
         if (color !== CircuitBreakerColor.RED) {
-          this.logger.debug(`--- stop pooling ---`);
           return color;
         }
 
-        cycle += 1
-        this.logger.debug(`pooling health cycle: ${cycle}`);
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await new Promise((resolve) => setTimeout(resolve, this.HEALTH_INTERVAL));
       }
     } finally {
       this.poolingHealth = false;
@@ -90,30 +103,21 @@ export class CircuitBreakerService {
     if (this.cachedColor === color) {
       return;
     }
-    this.logger.debug(`[SWAP] color: ${color}`);
 
-    const start = performance.now();
     this.cachedColor = color;
     await this.redis.set(this.CIRCUIT_BREAKER, color);
     this.lastColorCheck = Date.now();
-
-
-    const end = performance.now();
-
-    if (end - start > 10) {
-      this.logger.debug(`set color took ${end - start}ms`);
-    }
   }
 
 
-  private async health(processor: 'default' | 'fallback'): Promise<ProcessorHealth | null> {
+  private async health(processor: Processor): Promise<ProcessorHealth | null> {
     try {
       if (this.openedHealth) {
         return { minResponseTime: 0, failing: true };
       }
 
       const response = await lastValueFrom(this.httpService.get<ProcessorHealth>(this.processor[processor], {
-        timeout: 500,
+        timeout: this.HEALTH_TIMEOUT,
       }));
 
       const minResponseTime = response.data.minResponseTime;
@@ -122,7 +126,6 @@ export class CircuitBreakerService {
       return { minResponseTime, failing };
     } catch (error) {
       if (error?.response?.status === 429) {
-        this.logger.debug('rate limit exceeded on health');
         return { minResponseTime: 0, failing: false };
       }
       return { minResponseTime: 0, failing: true };
@@ -140,7 +143,7 @@ export class CircuitBreakerService {
       return CircuitBreakerColor.YELLOW;
     }
 
-    if (!processors.default.failing && !processors.fallback.failing && diff >= 5000) {
+    if (!processors.default.failing && !processors.fallback.failing && diff >= this.LATENCY_DIFF_TO_USE_FALLBACK) {
       return CircuitBreakerColor.YELLOW;
     }
 
@@ -150,61 +153,43 @@ export class CircuitBreakerService {
   async getCurrentColor(): Promise<CircuitBreakerColor> {
     const now = Date.now();
 
-    if (now - this.lastColorCheck < this.COLOR_CHECK_DEBOUNCE) {
+    if (now - this.lastColorCheck < this.COLOR_DEBOUNCE) {
       return this.cachedColor;
     }
-
-    const start = performance.now();
     const color = await this.redis.get(this.CIRCUIT_BREAKER);
     this.cachedColor = color as CircuitBreakerColor || CircuitBreakerColor.GREEN;
     this.lastColorCheck = now;
-
-    const end = performance.now();
-
-    if (end - start > 10) {
-      this.logger.debug(`getCurrentColor took ${end - start}ms`);
-    }
 
     return this.cachedColor;
   }
 
 
-  async signal(processor: 'default' | 'fallback'): Promise<CircuitBreakerColor | null> {
-    const start = performance.now();
+  async signal(processor: Processor): Promise<CircuitBreakerColor | null> {
     if (this.poolingHealth) {
       return CircuitBreakerColor.RED;
     }
 
-    const isDefault = processor === 'default';
+    const isDefault = processor === Processor.DEFAULT;
 
     this.openedHealth = true;
-    const otherProcessor = isDefault ? 'fallback' : 'default';
+    const otherProcessor = isDefault ? Processor.FALLBACK :Processor.DEFAULT;
     const health = await this.health(otherProcessor);
     this.openedHealth = false;
 
     if (health && !health.failing) {
       const newColor = isDefault ? CircuitBreakerColor.YELLOW : CircuitBreakerColor.GREEN;
       await this.color(newColor);
-
-      const end = performance.now();
-      if (end - start > 10) {
-        this.logger.debug(`signal took ${end - start}ms`);
-      }
       return newColor;
     }
 
     await this.color(CircuitBreakerColor.RED);
+
     this.cronToCheckTheHealth().then((recoveredColor) => {
       if (recoveredColor && recoveredColor !== CircuitBreakerColor.RED) {
         this.color(recoveredColor);
       }
     });
 
-    await this.color(CircuitBreakerColor.RED);
-    const end = performance.now();
-    if (end - start > 10) {
-      this.logger.debug(`signal took ${end - start}ms`);
-    }
     return CircuitBreakerColor.RED;
   }
 }

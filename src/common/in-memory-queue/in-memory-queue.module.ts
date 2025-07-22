@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { InMemoryQueueService } from './in-memory-queue.service';
-import { RedisModule } from '@nestjs-modules/ioredis';
+import { ConfigModule } from '../../config/config.module';
 
 @Module({
-  imports: [RedisModule],
+  imports: [ConfigModule],
   providers: [InMemoryQueueService],
   exports: [InMemoryQueueService],
 })
-export class InMemoryQueueModule { }
+export class InMemoryQueueModule {}

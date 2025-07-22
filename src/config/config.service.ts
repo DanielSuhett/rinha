@@ -56,4 +56,18 @@ export class ConfigService {
 			fallback: this.config.PROCESSOR_FALLBACK_URL,
 		};
 	}
+
+	getConstraints() {
+			return {
+				pollingInterval: this.config.POOLING_INTERVAL,
+				colorDebounce: this.config.COLOR_DEBOUNCE,
+				healthInterval: this.config.HEALTH_INTERVAL,
+				healthTimeout: this.config.HEALTH_TIMEOUT,
+				latencyDiffToUseFallback: this.config.LATENCY_DIFF_TO_USE_FALLBACK,
+			}
+	}
+
+	getRedisKeyPrefix(): string {
+		return this.config.APP_MODE === 'PRODUCER' ? 'prod:' : 'cons:';
+	}
 }

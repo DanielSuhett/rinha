@@ -1,18 +1,14 @@
 import { Module } from '@nestjs/common';
-import { HttpModule } from '@nestjs/axios';
+import { ConfigModule } from '../../config/config.module';
+import { ConfigService } from '../../config/config.service';
+import { InMemoryPooling } from './pooling.service';
+import { PaymentModule } from '../../payment/payment.module';
 import { RedisModule } from '@nestjs-modules/ioredis';
-import { ConfigModule } from '../config/config.module';
-import { ConfigService } from '../config/config.service';
 
 @Module({
   imports: [
-    HttpModule.registerAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: () => ({
-        timeout: 10000,
-      }),
-    }),
+    ConfigModule,
+    PaymentModule,
     RedisModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => {
@@ -35,6 +31,6 @@ import { ConfigService } from '../config/config.service';
       inject: [ConfigService],
     }),
   ],
-  exports: [HttpModule, RedisModule],
+  providers: [InMemoryPooling],
 })
-export class SharedModule {}
+export class PoolingModule {}
