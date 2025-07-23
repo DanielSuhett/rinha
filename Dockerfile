@@ -13,7 +13,9 @@ FROM node:20-alpine AS runtime
 RUN addgroup -g 1001 -S nodejs
 RUN adduser -S nestjs -u 1001
 
+ENV UV_THREADPOOL_SIZE=2
 WORKDIR /app
+
 
 COPY --from=builder --chown=nestjs:nodejs /app/package*.json ./
 RUN npm ci --only=production && npm cache clean --force

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 const environmentSchema = z.object({
   APP_PORT: z.coerce.number().default(3000),
-  APP_MODE: z.enum(['PRODUCER', 'CONSUMER']).default('PRODUCER'),
+  APP_MODE: z.enum(['1', '2']).default('1'),
 
   REDIS_HOST: z.string().default('localhost'),
   REDIS_PORT: z.coerce.number().default(6380),

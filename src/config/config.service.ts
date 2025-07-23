@@ -23,7 +23,7 @@ export class ConfigService {
     return this.config.APP_PORT;
   }
 
-  getAppMode(): 'PRODUCER' | 'CONSUMER' {
+  getAppMode(): '1' | '2' {
     return this.config.APP_MODE;
   }
 
@@ -67,6 +67,6 @@ export class ConfigService {
   }
 
   getRedisKeyPrefix(): string {
-    return this.config.APP_MODE === 'PRODUCER' ? 'prod:' : 'cons:';
+    return this.config.APP_MODE === '1' ? 'prod:' : 'cons:';
   }
 }
