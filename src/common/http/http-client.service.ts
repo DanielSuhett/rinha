@@ -25,7 +25,7 @@ export class HttpClientService {
     });
 
     this.client = axios.create({
-      timeout: 5000,
+      timeout: 1000,
       httpAgent,
       httpsAgent,
       headers: {
