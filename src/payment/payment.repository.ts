@@ -38,9 +38,8 @@ export class PaymentRepository implements OnModuleInit {
     return paymentWithDate
   }
 
-    newPaymentJSON(stringifiedData: string) {
+  newPaymentJSON(stringifiedData: string) {
     const requestedAt = new Date().toISOString();
-    // const paymentWithDate = stringifiedData.slice(0, -1) + `,"requestedAt":"${requestedAt}"}`;
     const payment = JSON.parse(stringifiedData);
     return {
       ...payment,
@@ -67,15 +66,14 @@ export class PaymentRepository implements OnModuleInit {
     await pipeline.exec();
   }
 
-  public async send(processorType: Processor, data: string): Promise<void> {
+  public send(processorType: Processor, data: string): void {
     const payment = this.newPaymentJSON(data);
-    try {
-      const response = await this.httpClientService.post(
-        this.processorPaymentUrl[processorType],
-        payment,
-        { timeout: 1000 }
-      );
 
+    this.httpClientService.post(
+      this.processorPaymentUrl[processorType],
+      payment,
+      { timeout: 1000 }
+    ).then(async (response) => {
       if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
         const { amount, correlationId, requestedAt } = payment;
         await this.save(
@@ -85,20 +83,42 @@ export class PaymentRepository implements OnModuleInit {
           requestedAt
         ).catch(e => console.error(e));
       }
-    } catch (error) {
-      const color = await this.circuitBreakerService.signal(processorType);
+    })
+      .catch((_) => {
+        const updatedPayment = this.newPaymentJSON(data);
+        const newProcessor = processorType === Processor.DEFAULT ? Processor.FALLBACK : Processor.DEFAULT;
+        this.circuitBreakerService.color(newProcessor === Processor.DEFAULT ? CircuitBreakerColor.GREEN : CircuitBreakerColor.YELLOW)
 
-      if (!color) {
-        return;
-      }
+        this.httpClientService.post(
+          this.processorPaymentUrl[newProcessor],
+          updatedPayment,
+          { timeout: 1000 }
+        ).then(async (response) => {
+          if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
+            const { amount, correlationId, requestedAt } = updatedPayment;
+            await this.save(
+              processorType,
+              amount,
+              correlationId,
+              requestedAt
+            ).catch(e => console.error(e));
+          }
+        })
+          .catch(async (_) => {
+            const color = await this.circuitBreakerService.signal(processorType);
 
-      if (color === CircuitBreakerColor.RED) {
-        this.inMemoryQueueService.requeue(data);
-        return;
-      }
+            if (!color) {
+              return;
+            }
 
-      await this.send(processorType, data);
-    }
+            if (color === CircuitBreakerColor.RED) {
+              this.inMemoryQueueService.requeue(data);
+              return;
+            }
+
+            await this.send(processorType, data);
+          })
+      })
   }
 
   public async find(

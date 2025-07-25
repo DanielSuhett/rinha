@@ -88,7 +88,7 @@ export class CircuitBreakerService {
     }
   }
 
-  private color(color: CircuitBreakerColor) {
+  public color(color: CircuitBreakerColor) {
     if (this.cachedColor === color) {
       return;
     }
