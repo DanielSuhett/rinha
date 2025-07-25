@@ -23,7 +23,6 @@ async function bootstrap() {
     AppModule,
     fastifyAdapter,
     {
-      logger: false,
       abortOnError: false,
       bufferLogs: false,
     }
@@ -45,6 +44,11 @@ async function bootstrap() {
     const query = request.query as { from?: string; to?: string };
     const result = await paymentService.getPaymentSummary(query.from, query.to);
     reply.send(result);
+  });
+
+  fastifyInstance.get('/health', (request, reply) => {
+    reply.raw.statusCode = 200;
+    reply.raw.end('OK');
   });
 
   const port = configService.getAppPort();

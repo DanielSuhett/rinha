@@ -1,15 +1,14 @@
 import { Module } from '@nestjs/common';
 import { CircuitBreakerService } from './circuit-breaker.service';
+import { CircuitBreakerManager } from './circuit-breaker.manager';
 import { ConfigModule } from '../../config/config.module';
 import { Logger } from '@nestjs/common';
-import { HttpClientModule } from '../http/http-client.module';
 
 @Module({
   imports: [
     ConfigModule,
-    HttpClientModule,
   ],
-  providers: [CircuitBreakerService, Logger],
+  providers: [CircuitBreakerService, CircuitBreakerManager, Logger],
   exports: [CircuitBreakerService],
 })
 export class CircuitBreakerModule { }

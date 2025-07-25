@@ -3,7 +3,7 @@ import { PaymentDto, Processor } from '../payment/payment.dto';
 import { ConfigService } from '../config/config.service';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import { Redis } from 'ioredis';
-import { CircuitBreakerColor, CircuitBreakerService } from 'src/common/circuit-breaker/circuit-breaker.service';
+import { CircuitBreakerService, CircuitBreakerColor } from 'src/common/circuit-breaker';
 import { InMemoryQueueService } from '../common/in-memory-queue/in-memory-queue.service';
 import { HttpClientService } from '../common/http/http-client.service';
 
@@ -71,11 +71,11 @@ export class PaymentRepository implements OnModuleInit {
     const payment = this.newPaymentJSON(data);
     try {
       const response = await this.httpClientService.post(
-        this.processorPaymentUrl[processorType], 
+        this.processorPaymentUrl[processorType],
         payment,
-        { timeout: 3000 }
+        { timeout: 1000 }
       );
-      
+
       if (response.status === HttpStatus.OK || response.status === HttpStatus.CREATED) {
         const { amount, correlationId, requestedAt } = payment;
         await this.save(
@@ -87,7 +87,7 @@ export class PaymentRepository implements OnModuleInit {
       }
     } catch (error) {
       const color = await this.circuitBreakerService.signal(processorType);
-      
+
       if (!color) {
         return;
       }
