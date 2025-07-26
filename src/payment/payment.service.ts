@@ -51,16 +51,7 @@ export class PaymentService {
       const fromTime = fromDate?.getTime() ?? undefined;
       const toTime = toDate?.getTime() ?? undefined;
 
-
-      const [defaultStats, fallbackStats] = await Promise.all([
-        this.paymentRepository.find(Processor.DEFAULT, fromTime, toTime),
-        this.paymentRepository.find(Processor.FALLBACK, fromTime, toTime),
-      ]);
-
-      const result = {
-        default: defaultStats,
-        fallback: fallbackStats,
-      };
+      const result = await this.paymentRepository.findAll(fromTime, toTime);
 
       return result;
     } catch (error) {
