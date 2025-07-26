@@ -30,7 +30,7 @@ services:
       - REDIS_PORT=6379
       - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
       - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
-      - LOG_LEVEL=DEBUG
+      - LOG_LEVEL=ERROR
     networks:
       - backend
       - rinha_payment-processor
@@ -55,7 +55,7 @@ services:
       - REDIS_PORT=6379
       - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
       - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
-      - LOG_LEVEL=DEBUG
+      - LOG_LEVEL=ERROR
     networks:
       - backend
       - rinha_payment-processor
@@ -71,7 +71,7 @@ services:
   redis:
     image: redis:7.2-alpine
     container_name: rinha-redis
-    command: redis-server --save "" --appendonly no --maxmemory 150mb --maxmemory-policy allkeys-lru --tcp-keepalive 60 --timeout 0 --tcp-backlog 511 --databases 1 --maxclients 10000 --hz 100 --rdbcompression no --rdbchecksum no
+    command: redis-server --save "" --appendonly no --maxmemory 45mb --maxmemory-policy allkeys-lru --tcp-keepalive 30 --timeout 0 --tcp-backlog 1024 --databases 1 --maxclients 5000 --hz 10 --rdbcompression no --rdbchecksum no --io-threads 2 --io-threads-do-reads yes
     networks:
       - backend
     ports:

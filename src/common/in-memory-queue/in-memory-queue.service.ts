@@ -14,14 +14,11 @@ export class InMemoryQueueService<T> {
     this.queueKey = this.configService.getRedisKeyPrefix()
   }
 
-  add(item: T): void {
-    const serializedItem = JSON.stringify(item);
-    this.redis.rpush(this.queueKey, serializedItem).catch((e) => console.error(e));
-    return;
+  add(item: string): void {
+    setImmediate(() => this.redis.lpush(this.queueKey, JSON.stringify(item)));
   }
 
   requeue(item: string): void {
-    this.redis.lpush(this.queueKey, item).catch((e) => console.error(e));
-    return;
+    setImmediate(() => this.redis.lpush(this.queueKey, item));
   }
 }

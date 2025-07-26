@@ -13,11 +13,7 @@ import {
 class CircuitBreakerWorker {
   private config: HealthCheckConfig | null = null;
   private currentColor: CircuitBreakerColor = CircuitBreakerColor.GREEN;
-  private isMonitoring = false;
-  private monitoringInterval: NodeJS.Timeout | null = null;
   private recoveryInterval: NodeJS.Timeout | null = null;
-  private lastHealthCheck = 0;
-  private readonly HEALTH_CHECK_RATE_LIMIT = 5000;
   private lastColorChange = 0;
   private readonly COLOR_DEBOUNCE_MS = 2000;
 
@@ -50,9 +46,6 @@ class CircuitBreakerWorker {
 
   private updateConfig(config: HealthCheckConfig) {
     this.config = config;
-    if (!this.isMonitoring) {
-      this.startMonitoring();
-    }
   }
 
   private async handleFailureSignal(processor: Processor, timestamp: number) {
@@ -72,14 +65,6 @@ class CircuitBreakerWorker {
     }
   }
 
-  private startMonitoring() {
-    if (this.isMonitoring || !this.config) return;
-
-    this.isMonitoring = true;
-    this.monitoringInterval = setInterval(async () => {
-      await this.performHealthCheck();
-    }, this.config.healthInterval);
-  }
 
   private startRecoveryMonitoring() {
     if (!this.config || this.recoveryInterval) return;
@@ -105,32 +90,6 @@ class CircuitBreakerWorker {
     }
   }
 
-  private async performHealthCheck() {
-    if (!this.config) return;
-
-    const now = Date.now();
-    if (now - this.lastHealthCheck < this.HEALTH_CHECK_RATE_LIMIT) {
-      return;
-    }
-
-    this.lastHealthCheck = now;
-
-    try {
-      const [defaultHealth, fallbackHealth] = await Promise.all([
-        this.checkHealth(Processor.DEFAULT),
-        this.checkHealth(Processor.FALLBACK),
-      ]);
-
-      const color = this.calculateColor({
-        default: defaultHealth || { failing: true, minResponseTime: 0 },
-        fallback: fallbackHealth || { failing: true, minResponseTime: 0 },
-      });
-
-      this.updateColor(color);
-    } catch (error) {
-      console.error('Health check failed:', error);
-    }
-  }
 
   private async checkForRecovery(): Promise<CircuitBreakerColor> {
     if (!this.config) return CircuitBreakerColor.RED;
@@ -213,11 +172,6 @@ class CircuitBreakerWorker {
 
 
   private shutdown() {
-    this.isMonitoring = false;
-    if (this.monitoringInterval) {
-      clearInterval(this.monitoringInterval);
-      this.monitoringInterval = null;
-    }
     this.stopRecoveryMonitoring();
     process.exit(0);
   }

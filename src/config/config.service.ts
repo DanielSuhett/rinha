@@ -23,8 +23,8 @@ export class ConfigService {
     return this.config.APP_PORT;
   }
 
-  getAppMode(): '1' | '2' {
-    return this.config.APP_MODE;
+  getAppName(): '1' | '2' {
+    return this.config.APP_NAME;
   }
 
   getRedisHost(): string {
@@ -67,6 +67,6 @@ export class ConfigService {
   }
 
   getRedisKeyPrefix(): string {
-    return this.config.APP_MODE === '1' ? 'prod:' : 'cons:';
+    return this.config.APP_NAME === '1' ? 'prod:' : 'cons:';
   }
 }

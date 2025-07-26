@@ -35,7 +35,7 @@ async function bootstrap() {
   const fastifyInstance = app.getHttpAdapter().getInstance();
 
   fastifyInstance.post('/payments', (request, reply) => {
-    queueService.add(request.body as PaymentDto);
+    queueService.add(request.body as string);
     reply.raw.statusCode = 201;
     reply.raw.end();
   });

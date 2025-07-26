@@ -38,7 +38,7 @@ export class PaymentRepository implements OnModuleInit {
     return paymentWithDate
   }
 
-    newPaymentJSON(stringifiedData: string) {
+  newPaymentJSON(stringifiedData: string) {
     const requestedAt = new Date().toISOString();
     // const paymentWithDate = stringifiedData.slice(0, -1) + `,"requestedAt":"${requestedAt}"}`;
     const payment = JSON.parse(stringifiedData);
@@ -110,15 +110,7 @@ export class PaymentRepository implements OnModuleInit {
       const statsKey = `${this.PROCESSED_PAYMENTS_PREFIX}:${processorType}:stats`;
 
       if (fromTime === undefined && toTime === undefined) {
-        const [countStr, totalStr] = await Promise.race([
-          this.redis.hmget(statsKey, 'count', 'total'),
-          new Promise<string[]>((_, reject) =>
-            setTimeout(
-              () => reject(new Error('Redis operation timeout')),
-              10000,
-            ),
-          ),
-        ]);
+        const [countStr, totalStr] = await this.redis.hmget(statsKey, 'count', 'total')
 
         return {
           totalRequests: parseInt(countStr || '0', 10),
@@ -130,15 +122,7 @@ export class PaymentRepository implements OnModuleInit {
       const min = fromTime ?? 0;
       const max = toTime ?? '+inf';
 
-      const amounts = await Promise.race([
-        this.redis.zrangebyscore(timelineKey, min, max),
-        new Promise<string[]>((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Redis operation timeout')),
-            10000,
-          ),
-        ),
-      ]);
+      const amounts = await this.redis.zrangebyscore(timelineKey, min, max);
 
       if (amounts.length === 0) {
         return { totalRequests: 0, totalAmount: 0 };

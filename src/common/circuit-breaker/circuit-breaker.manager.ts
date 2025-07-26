@@ -2,6 +2,8 @@ import { Worker } from 'worker_threads';
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import * as path from 'path';
 import { Processor } from 'src/payment/payment.dto';
+import { ConfigService } from '../../config/config.service';
+import { CircuitBreakerSyncService } from './circuit-breaker-sync.service';
 import {
   CircuitBreakerColor,
   HealthCheckConfig,
@@ -19,11 +21,27 @@ export class CircuitBreakerManager implements OnModuleDestroy {
   private restartAttempts = 0;
   private readonly MAX_RESTART_ATTEMPTS = 2;
   private readonly RESTART_DELAY = 1000;
+  private isMaster = false;
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly syncService: CircuitBreakerSyncService,
+  ) {
+    this.isMaster = this.configService.getAppName() === '1';
+  }
 
   async initialize(config: HealthCheckConfig): Promise<void> {
-    await this.startWorker();
-    if (this.isWorkerReady) {
-      this.sendConfigToWorker(config);
+    this.currentColor = await this.syncService.getInitialColor();
+
+    if (this.isMaster) {
+      await this.startWorker();
+      if (this.isWorkerReady) {
+        this.sendConfigToWorker(config);
+      }
+    } else {
+      await this.syncService.subscribeToColorChanges((color) => {
+        this.currentColor = color;
+      });
     }
   }
 
@@ -71,7 +89,12 @@ export class CircuitBreakerManager implements OnModuleDestroy {
     switch (message.type) {
       case WorkerMessageType.COLOR_UPDATE:
         this.currentColor = message.color;
-        this.logger.debug(`Color updated to: ${message.color}`);
+
+        if (this.isMaster) {
+          this.syncService.publishColorChange(message.color).catch(error => {
+            this.logger.error('Failed to publish color change:', error);
+          });
+        }
         break;
       case WorkerMessageType.WORKER_READY:
         this.isWorkerReady = true;
@@ -133,13 +156,22 @@ export class CircuitBreakerManager implements OnModuleDestroy {
   }
 
   async signalFailure(processor: Processor): Promise<CircuitBreakerColor> {
-    this.sendMessageToWorker({
-      type: WorkerMessageType.SIGNAL_FAILURE,
-      processor,
-      timestamp: Date.now(),
-    });
+    if (this.isMaster) {
+      this.sendMessageToWorker({
+        type: WorkerMessageType.SIGNAL_FAILURE,
+        processor,
+        timestamp: Date.now(),
+      });
+    }
 
     this.currentColor = CircuitBreakerColor.RED;
+
+    if (this.isMaster) {
+      this.syncService.publishColorChange(this.currentColor).catch(error => {
+        this.logger.error('Failed to publish color change:', error);
+      });
+    }
+
     return this.currentColor;
   }
 

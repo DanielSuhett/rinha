@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 const environmentSchema = z.object({
   APP_PORT: z.coerce.number().default(3000),
-  APP_MODE: z.enum(['1', '2']).default('1'),
+  APP_NAME: z.enum(['1', '2']).default('1'),
 
   REDIS_HOST: z.string().default('localhost'),
   REDIS_PORT: z.coerce.number().default(6380),
@@ -14,7 +14,7 @@ const environmentSchema = z.object({
   POOLING_INTERVAL: z.number().default(1000),
 
   // circuit breaker fine tuning params
-  HEALTH_TIMEOUT: z.number().default(1000),
+  HEALTH_TIMEOUT: z.number().default(500),
   HEALTH_INTERVAL: z.number().default(5000),
   LATENCY_DIFF_TO_USE_FALLBACK: z.number().default(1000),
 });
