@@ -18,6 +18,8 @@ class CircuitBreakerWorker {
   private recoveryInterval: NodeJS.Timeout | null = null;
   private lastHealthCheck = 0;
   private readonly HEALTH_CHECK_RATE_LIMIT = 5000;
+  private lastColorChange = 0;
+  private readonly COLOR_DEBOUNCE_MS = 2000;
 
   constructor() {
     this.setupMessageHandler();
@@ -189,12 +191,17 @@ class CircuitBreakerWorker {
 
   private updateColor(newColor: CircuitBreakerColor) {
     if (this.currentColor !== newColor) {
-      this.currentColor = newColor;
-      this.sendMessage({
-        type: WorkerMessageType.COLOR_UPDATE,
-        color: newColor,
-        timestamp: Date.now(),
-      });
+      const now = Date.now();
+      
+      if (newColor === CircuitBreakerColor.RED || now - this.lastColorChange >= this.COLOR_DEBOUNCE_MS) {
+        this.currentColor = newColor;
+        this.lastColorChange = now;
+        this.sendMessage({
+          type: WorkerMessageType.COLOR_UPDATE,
+          color: newColor,
+          timestamp: now,
+        });
+      }
     }
   }
 
