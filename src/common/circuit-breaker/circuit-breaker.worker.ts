@@ -15,7 +15,7 @@ class CircuitBreakerWorker {
   private currentColor: CircuitBreakerColor = CircuitBreakerColor.GREEN;
   private recoveryInterval: NodeJS.Timeout | null = null;
   private lastColorChange = 0;
-  private readonly COLOR_DEBOUNCE_MS = 2000;
+  private readonly COLOR_DEBOUNCE_MS = 3000;
 
   constructor() {
     this.setupMessageHandler();
@@ -151,7 +151,7 @@ class CircuitBreakerWorker {
   private updateColor(newColor: CircuitBreakerColor) {
     if (this.currentColor !== newColor) {
       const now = Date.now();
-      
+
       if (newColor === CircuitBreakerColor.RED || now - this.lastColorChange >= this.COLOR_DEBOUNCE_MS) {
         this.currentColor = newColor;
         this.lastColorChange = now;

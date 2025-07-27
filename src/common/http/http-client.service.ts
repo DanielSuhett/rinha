@@ -13,7 +13,7 @@ export class HttpClientService {
       keepAliveMsecs: 1000,
       maxSockets: 256,
       maxFreeSockets: 256,
-      timeout: 60000,
+      timeout: 1000,
     });
 
     const httpsAgent = new HttpsAgent({
@@ -21,7 +21,7 @@ export class HttpClientService {
       keepAliveMsecs: 1000,
       maxSockets: 256,
       maxFreeSockets: 256,
-      timeout: 60000,
+      timeout: 1000,
     });
 
     this.client = axios.create({
